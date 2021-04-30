@@ -49,20 +49,23 @@ Bash scripts are provided which will
 4. link the C library with gsl as a python extension module
 5. run the demo script "demo.py"
 
-To launch the scripts, run the following appropriate command:
+To launch the scripts, run the following appropriate commands:
 
-Setup:
-If on TACC, load the following: 
-"module load gcc/9.1; module load python3/3.8.2"
-And launch the installation ("." bash call allows correct pathing):
-". setup.sh"
+**Setup**:
+   If on TACC, load the following: 
+   `<module load gcc/9.1; module load python3/3.8.2>`
+   And launch the installation:
+   `<. setup.sh>`
 
-Demo:
-For TACC systems:
-"sbatch pycis_demo.job"
-For all other systems:
-". run_demo.sh"
-and ensure 'framerange' and 'scale' are reduced on demo.py, to prevent memory crash.
+**Prepare data**:
+   `<cd data; bash unzip_data.sh; cd ..>`
+
+**Demo**:
+   For TACC systems:
+   `<sbatch pycis_demo.job>`
+   For all other systems:
+   `<. run_demo.sh>`
+   and ensure 'framerange' and 'scale' are reduced on demo.py, to prevent memory crash.
 
 The demo will:
 1. read a subset of fits files from data/ (using pylib/import_fits). 
