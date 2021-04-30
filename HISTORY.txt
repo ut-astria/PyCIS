@@ -1,0 +1,25 @@
+TODO: 
+    High-Priority:
+        * update regions3.c/region3_grow() and grdient.c/isaligned3() to correct
+            region growing of lines in the spatial plane.  Neccessary to ensure 
+            enough star-streaks for plate solving step
+        * astrometry.net plate solving after edge detections
+        * update regions3.c/regions3_growORTH() to solve linearity constraint, 
+            using non-linear region growing using transformed line priors
+        * detect_outliers.py/detect_outliers() update pca/gmm solution to be 
+            more robust to reduced point sets (eg 0.5 scaling in demo.py/__main__)
+            for faster prototyping 
+    Medium-Priority
+        * sliding window with overlap given large data for import_fits,
+            to prevent memory crashing
+        * ASTRIA-Net pipeline integration 
+    Low-Priority
+        * for acceleration when not involving loops to compute markov kernels,
+            compute gradient matrices only once and share across LSD3M
+    
+------------------------------------------------------------------
+
+04/30/2021
+    *Initial Upload
+
+------------------------------------------------------------------

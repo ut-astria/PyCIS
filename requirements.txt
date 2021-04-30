@@ -1,0 +1,6 @@
+numpy
+scipy
+imageio
+opencv-python
+scikit-learn
+astropy
