@@ -1,13 +1,13 @@
 # PyCIS - Python Computational Inference from Structure
 
-    A-contrario inference of object trajectories from structure-in-noise, 
-    building on Line Segment Detection (LSD) for dense electro-optical time-series data
-    formatted as 3D data cubes, with markov kernel estimation for non-uniform noise models.
-    LSD C-extension module equipped with multi-layer a-contrario inference for center-line features
-    from gradient information.  Python modules provided for inference of feature classifications
-    using second-order gestalts, and ingesting/plotting of FITS-format data files.
+   A-contrario inference of object trajectories from structure-in-noise, 
+   building on Line Segment Detection (LSD) for dense electro-optical time-series data
+   formatted as 3D data cubes, with markov kernel estimation for non-uniform noise models.
+   LSD C-extension module equipped with multi-layer a-contrario inference for center-line features
+   from gradient information.  Python modules provided for inference of feature classifications
+   using second-order gestalts, and ingesting/plotting of FITS-format data files.
 
-    This software is under active development.
+   This software is under active development.
 
 Benjamin Feuge-Miller: benjamin.g.miller@utexas.edu
 The University of Texas at Austin, 
@@ -43,11 +43,11 @@ See 'Operation' and 'Notes on Demo Output Visual Observations' sections below.
 ## OPERATION:
 
 Bash scripts are provided which will 
-1) launch prerequisite software installation of GSL 
-2) create and/or activate python3 environment "./env"
-3) compile the C library given in "./lib"
-4) link the C library with gsl as a python extension module
-5) run the demo script "demo.py"
+1. launch prerequisite software installation of GSL 
+2. create and/or activate python3 environment "./env"
+3. compile the C library given in "./lib"
+4. link the C library with gsl as a python extension module
+5. run the demo script "demo.py"
 
 To launch the scripts, run the following appropriate command:
 
@@ -65,33 +65,32 @@ For all other systems:
 and ensure 'framerange' and 'scale' are reduced on demo.py, to prevent memory crash.
 
 The demo will:
-1) read a subset of fits files from data/ (using pylib/import_fits). 
-2) performs line segment detection (LSD) through pycis.c 
-    2a) detect parallel and orthogonal markov kernels 
-    2b) perform first-order gestalt detection of edge-lines
-    2c) perform first-order gestalt detection of center-lines with edge prior
-3) perform second-order gestalt detection (using pylib/detect_outliers)
-4) print results to results/. 
+1. read a subset of fits files from data/ (using pylib/import_fits). 
+2. performs line segment detection (LSD) through pycis.c 
+    1. detect parallel and orthogonal markov kernels 
+    2. perform first-order gestalt detection of edge-lines
+    3. perform first-order gestalt detection of center-lines with edge prior
+3. perform second-order gestalt detection (using pylib/detect_outliers)
+4. print results to results/. 
 
 The second-order-meaningful lines correspond to detection of a 
 Starlink satellite made using ASTRIANet telescope resources 
 through UT CAST [see citations in DATASET section below]. 
 
-Input: data/...
-    yyymmdd_norad_satname/*.fit - a folder with raw fits frames
-        [see citations in DATASET section below] 
-Output: results/...
-    data1_name.npy - edge line detections
-    data2_name.npy - center line detections
-    goodlines_name.npy - 2nd-order meaningful detections
-    badlines_name.npy - 1st-order meaningful only detections
-    img_name.npy - last fit frame data with projected detections (2nd order in red)
-    vidAll_name.npy - animated fits data with projected detections (2nd order in red)
-    vidObj_name.npy - animated fits data with only 2nd-order projected detections
+* Input: data/...
+    * yyymmdd_norad_satname/x.fit - a folder with raw fits frames [see citations in DATASET section below] 
+* Output: results/...
+    * data1_name.npy - edge line detections
+    * data2_name.npy - center line detections
+    * goodlines_name.npy - 2nd-order meaningful detections
+    * badlines_name.npy - 1st-order meaningful only detections
+    * img_name.npy - last fit frame data with projected detections (2nd order in red)
+    * vidAll_name.npy - animated fits data with projected detections (2nd order in red)
+    * vidObj_name.npy - animated fits data with only 2nd-order projected detections
 
 Runtime estimates are ~30 min on TACC for an unscaled 26-frame subset (4906x4906px)
-    ~10min for 0.5 scaling, but GMM model fitting requires performance 
-    improvements on reduced point sets to accuratly seperate outliers. 
+~10min for 0.5 scaling, but GMM model fitting requires performance 
+improvements on reduced point sets to accuratly seperate outliers. 
 Runtime not yet estimated for local machines due to size of full-scale data sets.  
 
 ------------------------------------------------------------------
@@ -145,92 +144,99 @@ URL: http://www.tacc.utexas.edu
 
 ## TOC:
 
-demo.py -           run demo as discussed above
-pycis_demo.job -   slurm call to run_demo for TACC
-pycis.c -          main python extension module 
-run_demo.sh -       activate env and launch demo
-setup.py -          link python-c extension module
-setup.sh -          install gsl/pyenv/Makefile, link
+* demo.py -           run demo as discussed above
+* pycis_demo.job -   slurm call to run_demo for TACC
+* pycis.c -          main python extension module 
+* run_demo.sh -       activate env and launch demo
+* setup.py -          link python-c extension module
+* setup.sh -          install gsl/pyenv/Makefile, link
 
 
-LIB:
-    constants -     set up some constants
-    gaussians -     gaussian down-sampling for antialiasing
-    gradient -      compute gradient magnitude/orientation, and alignment checks
-    interface -     pipeline helpers for pycis.c
-    lsd(2/3) -      main lsd pipelines
-    markov -        estimate markov kernels and build transition matrices
-    misc -          lists, angle functions
-    NFA -           estimate markov or negative binomial approximation tail probability
-    rectanges(2/3)- build rectangle objects and iterator to call nfa
-    regions(2/3) -  build and improve pixel regions for estimating rectangles
-    tuples -        construction of line tuples and image structures 
+* LIB:
+    * constants -     set up some constants
+    * gaussians -     gaussian down-sampling for antialiasing
+    * gradient -      compute gradient magnitude/orientation, and alignment checks
+    * interface -     pipeline helpers for pycis.c
+    * lsd(2/3) -      main lsd pipelines
+    * markov -        estimate markov kernels and build transition matrices
+    * misc -          lists, angle functions
+    * NFA -           estimate markov or negative binomial approximation tail probability
+    * rectanges(2/3)- build rectangle objects and iterator to call nfa
+    * regions(2/3) -  build and improve pixel regions for estimating rectangles
+    * tuples -        construction of line tuples and image structures 
 
-PYLIB:
-    detect_outliers -   detect 2nd-order meaningful lines, given many spurious detections 
-    import_fits -       import fits time-series data into data cubes
-    print_detections -  construct video/image output with detection plots
+* PYLIB:
+    * detect_outliers -   detect 2nd-order meaningful lines, given many spurious detections 
+    * import_fits -       import fits time-series data into data cubes
+    * print_detections -  construct video/image output with detection plots
 
 ------------------------------------------------------------------
 
 ## REFERENCES 
 (see REFERENCES.txt for full citations)
 
-Data resources:
-    ASTRIA-Graph [Esteva_2020, Simone_2021]
+* Data resources:
+    * ASTRIA-Graph [Esteva_2020, Simone_2021]
 
-Background NFA formulations:
-    Meaningful Alignments [Desolneux_2000] [Desolneux_2008] [Desolneux_2016]
+* Background NFA formulations:
+    * Meaningful Alignments [Desolneux_2000] [Desolneux_2008] [Desolneux_2016]
 
-Initial LSD algorithm:
-    Initial LSD code: [vonGioi_2012]
-    Adaption of LSD for non-independent hypothesis and robust gradients: [Liu_2019]
-    Source for non-independence hypothesis [Almazan_2017] [Myaskouvskey_2013]
-    Source for robust gradient-by-ratio [Dellinger_2015]
+* Initial LSD algorithm:
+    * Initial LSD code: [vonGioi_2012]
+    * Adaption of LSD for non-independent hypothesis and robust gradients: [Liu_2019]
+    * Source for non-independence hypothesis [Almazan_2017] [Myaskouvskey_2013]
+    * Source for robust gradient-by-ratio [Dellinger_2015]
 
-Centerline detection modifications (rectangles(2/3).c, lsd(2,3).c)
-    2nd-order gestalts and the two-run NFA [Lezama_2014] [Simon_2018]
-    Improved geometric-series rectangle improvement [Lezama_2015]
+* Centerline detection modifications (rectangles(2/3).c, lsd(2,3).c)
+    * 2nd-order gestalts and the two-run NFA [Lezama_2014] [Simon_2018]
+    * Improved geometric-series rectangle improvement [Lezama_2015]
 
-Other relevant attempts towards a 3D solution: 
-    Trajectory method towards 3D alg: [Dimiccoli_2016]
-    Point cloud method towards 3D alg: [Gomez_2017]
-    Binomial framing of outlier problem: [Moisan_2016] [Zair_2015]
+* Other relevant attempts towards a 3D solution: 
+    * Trajectory method towards 3D alg: [Dimiccoli_2016]
+    * Point cloud method towards 3D alg: [Gomez_2017]
+    * Binomial framing of outlier problem: [Moisan_2016] [Zair_2015]
 
-Outlier detection of 2nd-order gestalt (detect_outliers.py)
-    Single-outlier detection, NFA as p-values [Grosjean_2008]
-    Mahanalobis GMM binomial outlier with chi2 model [Rousseau_2008]
-    Mahalanobis fisher model (see detect_outliers.py) [Roizman_2020]
-    Weighted z-test [Zaykin_2011]
+* Outlier detection of 2nd-order gestalt (detect_outliers.py)
+    * Single-outlier detection, NFA as p-values [Grosjean_2008]
+    * Mahanalobis GMM binomial outlier with chi2 model [Rousseau_2008]
+    * Mahalanobis fisher model (see detect_outliers.py) [Roizman_2020]
+    * Weighted z-test [Zaykin_2011]
 
-NFA approximation (nfa.c):  
-    Markov binomial approximation  [Xia_2010]
+* NFA approximation (nfa.c):  
+    * Markov binomial approximation  [Xia_2010]
 
-ROC curve analysis:
-    P-value method towards ROC curves [Maumet_2016]
-    ROC Curves [Bowyer_1999] [Dougherty_1998]
+* ROC curve analysis:
+    * P-value method towards ROC curves [Maumet_2016]
+    * ROC Curves [Bowyer_1999] [Dougherty_1998]
  
 ------------------------------------------------------------------
 
 ## NOTICES:
 
 Notice for PyCIS: see pycis.c for more details 
-    **NOTICE**: This program is modified from the source code of LSDSAR:
-    "LSDSAR, a Markovian a contrario framework for line segment detection in SAR images"
-    by Chenguang Liu, Rémy Abergel, Yann Gousseau and Florence Tupin. 
-    (Pattern Recognition, 2019).
-    https://doi.org/10.1016/j.patcog.2019.107034
-    *Date of Modification: April 30, 2021*
 
-Copyright notice for LSDSAR:
-    **NOTICE**: This code is modified from the source code of LSD:
-    "LSD: a Line Segment Detector" by Rafael Grompone von Gioi,
-    Jeremie Jakubowicz, Jean-Michel Morel, and Gregory Randall,
-    Image Processing On Line, 2012. DOI:10.5201/ipol.2012.gjmr-lsd
-    http://dx.doi.org/10.5201/ipol.2012.gjmr-lsd
-    *Date of Modification: 27/06/2018*
+**NOTICE**: 
+This program is modified from the source code of LSDSAR:
+"LSDSAR, a Markovian a contrario framework for line segment detection in SAR images"
+by Chenguang Liu, Rémy Abergel, Yann Gousseau and Florence Tupin. 
+(Pattern Recognition, 2019).
+https://doi.org/10.1016/j.patcog.2019.107034
+*Date of Modification: April 30, 2021*
 
-**NOTICE**: This program is released under GNU Affero General Public License
+Original copyright notice from LSDSAR:
+
+**NOTICE**: 
+This code is modified from the source code of LSD:
+"LSD: a Line Segment Detector" by Rafael Grompone von Gioi,
+Jeremie Jakubowicz, Jean-Michel Morel, and Gregory Randall,
+Image Processing On Line, 2012. DOI:10.5201/ipol.2012.gjmr-lsd
+http://dx.doi.org/10.5201/ipol.2012.gjmr-lsd
+*Date of Modification: 27/06/2018*
+
+PyCIS License Notice:
+
+**NOTICE**: 
+This program is released under GNU Affero General Public License
 and any conditions added under section 7 in the link:
 https://www.gnu.org/licenses/agpl-3.0.en.html
 
