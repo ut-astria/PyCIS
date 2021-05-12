@@ -35,7 +35,7 @@ second-order a-contrario analysis for outlier detection.
 This second-order analysis accounts for spurious structures in noise
 (e.g. star motion, telescope noise) which have a large number of detectable features 
 and hence should be rejected under the paradigm.  
-See 'Operation' and 'Notes on Demo Output Visual Observations' sections below.
+See 'Operation' and 'Demo Visual Observation' sections below.
 
 
 ------------------------------------------------------------------
@@ -52,6 +52,8 @@ Bash scripts are provided which will
 To launch the scripts, run the following appropriate commands:
 
 **Setup**:
+   If scripts cannot be read, run:
+   `<dos2unix pycis_demo.job setup.sh run_demo.sh>`
    If on TACC, load the following: 
    `<module load gcc/9.1; module load python3/3.8.2>`
    And launch the installation:
@@ -88,30 +90,28 @@ through UT CAST [see citations in DATASET section below].
     * goodlines_name.npy - 2nd-order meaningful detections
     * badlines_name.npy - 1st-order meaningful only detections
     * img_name.npy - last fit frame data with projected detections (2nd order in red)
-    * vidAll_name.npy - animated fits data with projected detections (2nd order in red)
+    * vidAll_name.npy - animated fits data with projected detections (2nd order in red) 
     * vidObj_name.npy - animated fits data with only 2nd-order projected detections
 
 Runtime estimates are ~30 min on TACC for an unscaled 26-frame subset (4906x4906px)
-~10min for 0.5 scaling, but GMM model fitting requires performance 
-improvements on reduced point sets to accuratly seperate outliers. 
+~10min for 0.5 scaling, but pending update of gradient analysis method to provide enough points for outlier detection. 
 Runtime not yet estimated for local machines due to size of full-scale data sets.  
 
 ------------------------------------------------------------------
 
-## NOTES ON DEMO OUTPUT VISUAL OBSERVATION
+## DEMO VISUAL OBSERVATION
 
+![Demo Video](docs/videoAll_20201220_45696_starlink-1422.gif)
 
 Many single-frame features (namely star-streak features) 
 are visual gestalts but are not registered as 'meaninful events'
 (as of version 0.1).
-This is likely due to how the current region-growing algorithm of the 
-measurement function handles accumulation of polar angles, and 
-is slated for a near-term update. 
+Additionally, the track is lost on the last frames 
+of the vidObj*.avi demo video.  
+These issues appear to be due to the use of a single cubic 3D kernel for gradient computation, which incorrectly computes elevation angles due to the limited temporal resolution.  A joint spatial (2D) and temporal (3D) detection pipeline with a unified exclusion principle is slated for a near-term update.  
+Linearity constraints on region-growing of center-line features (non-constant velocity) may be causing issues with the object track near the end of the demo video, and this is under investigation, along with implementation of non-linear trajectory priors.
 
-On the frame subset of the demo, the track is lost on the last frames 
-of the vidObj*.avi video.  
-This is likely due to linearity constraints on region-growing of center-
-line features (non-constant velocity), and is slated for a near-term update.
+Note: This video has been converted to .gif format and rescaled to 50% for github rendering.
 
 ------------------------------------------------------------------
 
