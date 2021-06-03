@@ -76,17 +76,22 @@ def interp_frame(locline,z):
         y2 = int(myinterp(z,z1,z2,y1,y2))
     return x1,y1,x2,y2
 
-def print_detections(img,goodlines=[],badlines=[],folder='',savename='temp',args=None,makeimg=1,makevid=1):
+def print_detections(img,goodlines=[],badlines=[],folder='',savename='temp',args=None,makeimg=1,makevid=1,vs=0.25):
     '''    Generate video    '''
     print('%d 2nd-order meaningful lines, %d other 1st-order meaninful lines'%(len(goodlines),len(badlines)))
 
     #Prepare image data for printing
     v = prepimg(img)
     aa,bb,cc,_ = v.shape
+    av=int(aa*vs); bv=int(bb*vs); cv=int(cc*vs)
+    gifset_all=[]
+    gifset_obj=[]
 
     #Get a line thickness for printing
     denom=8
     thick = int(np.ceil(v.shape[0]/100)/denom)
+    if vs<1.:
+        thick = int(thick*max(vs,0.5))
     thick = max(thick,2)
 
     ## Initialize video writer
@@ -95,25 +100,30 @@ def print_detections(img,goodlines=[],badlines=[],folder='',savename='temp',args
         os.makedirs(folder)
     fourcc = cv2.VideoWriter_fourcc('M','J','P','G')
     videoname_all='%s/videoAll_%s.avi'%(folder,savename)
-    video_all = cv2.VideoWriter(videoname_all,fourcc,fps,(aa,bb)) 
+    video_all = cv2.VideoWriter(videoname_all,fourcc,fps,(av,bv))
     videoname_obj='%s/videoObj_%s.avi'%(folder,savename)
-    video_obj = cv2.VideoWriter(videoname_obj,fourcc,fps,(aa,bb)) 
+    video_obj = cv2.VideoWriter(videoname_obj,fourcc,fps,(av,bv))
 
     #Run video maker
     print('writing : ',savename, '...')
+
     for z in range(cc):
-        #Get frame 
-        #print('\t(%d/%d)'%(z,cc))
+        #Get frame
+        #Create temp data frames
         sub_all = np.copy(v[:,:,z,:].squeeze())
-        subwrite_all = np.copy(v[:,:,z,:].squeeze())
-        sub_obj = np.copy(v[:,:,z,:].squeeze())
-        subwrite_obj = np.copy(v[:,:,z,:].squeeze())
+        sub_all = cv2.resize(sub_all, (av,bv), interpolation = cv2.INTER_CUBIC)
+        sub_all = cv2.convertScaleAbs(sub_all)
+        sub_obj = np.copy(sub_all)
+        subwrite_all = np.copy(sub_all)
+        subwrite_obj = np.copy(sub_all)
 
         #Interpolate (bad)line to draw at z-frame
         if len(badlines)>0:
             for k in range(len(badlines)):
                 locline = badlines[k,:6].squeeze()
                 x1,y1,x2,y2 = interp_frame(locline,z)
+                x1*=vs; y1*=vs; x2*=vs; y2*=vs
+                x1=int(x1); y1=int(y1); x2=int(x2); y2=int(y2)
                 if all(np.array([x1,y1,x2,y2])==0):
                     continue
                 sub_all = cv2.line(sub_all,(x1,y1),(x2,y2),(255,0,0),thick)
@@ -124,11 +134,13 @@ def print_detections(img,goodlines=[],badlines=[],folder='',savename='temp',args
             for k in range(len(goodlines)):
                 locline = goodlines[k,:6].squeeze()
                 x1,y1,x2,y2 = interp_frame(locline,z)
+                x1*=vs; y1*=vs; x2*=vs; y2*=vs
+                x1=int(x1); y1=int(y1); x2=int(x2); y2=int(y2)
                 if all(np.array([x1,y1,x2,y2])==0):
                     continue
                 sub_all = cv2.line(sub_all,(x1,y1),(x2,y2),(0,0,255),thick)
                 sub_obj = cv2.line(sub_obj,(x1,y1),(x2,y2),(0,0,255),thick)
-        
+
         #Draw frames with transparency, to ensure visibility of all lines
         alpha = 0.5
         if alpha<1.:
@@ -137,16 +149,29 @@ def print_detections(img,goodlines=[],badlines=[],folder='',savename='temp',args
         else:
             subwrite_all=sub_all
             subwrite_obj=sub_obj
-        #added for possible disabling of vido printing 
+        #added for possible disabling of vido printing
         if makevid==1:
             video_all.write(subwrite_all)
             video_obj.write(subwrite_obj)
+        #write gif data 
+        subwrite_all = cv2.cvtColor(subwrite_all, cv2.COLOR_BGR2RGB)
+        subwrite_obj = cv2.cvtColor(subwrite_obj, cv2.COLOR_BGR2RGB)
+        gifset_all.append(subwrite_all)
+        gifset_obj.append(subwrite_obj)
+
 
     
     #release video
     print('releasing...')
     video_all.release()
     video_obj.release()
+    #save reduced-scale gifs
+    pre, ext = os.path.splitext(videoname_all)
+    gifname_all = pre+".gif"
+    pre, ext = os.path.splitext(videoname_obj)
+    gifname_obj = pre+".gif"
+    imageio.mimsave(gifname_all, gifset_all,fps=5)
+    imageio.mimsave(gifname_obj, gifset_obj,fps=5)
 
     #Saving last frame for visualization 
     imageio.imwrite('%s/img_%s.png'%(folder,savename),np.flip(sub_all,-1))

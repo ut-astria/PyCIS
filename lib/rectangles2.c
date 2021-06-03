@@ -352,3 +352,47 @@ double rect_nfa(struct rect * rec, image_double angles, double logNT,double *ima
   return nfa(pts,alg,rec->p,logNT,image,N); /* compute NFA value */
 }
 
+/*----------------------------------------------------------------------------*/
+/** Compute a rectangle's NFA value, for centerline detection
+ * check alignement orthogonally 
+ */
+double rect_nfaORTH(struct rect * rec, image_double angles, double logNT,double *image, double *pset, int N,int minreg)
+{
+  rect_iter * i;
+  int pts = 0;
+  int alg = 0;
+
+  /* check parameters */
+  if( rec == NULL ) error("rect_nfa: invalid rectangle.");
+  if( angles == NULL ) error("rect_nfa: invalid 'angles'.");
+
+  /* compute the total number of pixels and of aligned points in 'rec' */
+  for(i=ri_ini(rec); !ri_end(i); ri_inc(i)) /* rectangle iterator */
+    if( i->x >= 0 && i->y >= 0 &&
+        i->x < (int) angles->xsize && i->y < (int) angles->ysize )
+      {
+        ++pts; /* total number of pixels counter */
+
+        if( isalignedORTH(i->x, i->y, angles, rec->theta, rec->prec) )
+          ++alg; /* aligned points counter */
+      }
+  ri_del(i); /* delete iterator */
+
+  
+  //save nfa for switching to binomial estimation if outside markov table or nonfinite
+  double nfaout=0.;
+  if(pts<minreg)
+    nfaout=-1;
+  else
+  {
+    if (pts<N)
+    {
+      nfaout=nfa(pts,alg,rec->p,logNT,image,N); /* compute NFA value */
+      if(!isfinite(nfaout))
+        nfaout=nfaORTH(pts,alg,rec->p,logNT,pset,N); /* compute NFA value */
+    }
+    else
+      nfaout = nfaORTH(pts,alg,rec->p,logNT,pset,N); /* compute NFA value */
+  }
+  return nfaout;
+}

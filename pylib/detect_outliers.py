@@ -89,7 +89,11 @@ def PCA(linesNormIn, numvars=6):
     else:
         #Simply select data
         linesNorm = linesNorm[:,:(numvars+1)]
-
+    for x in range(linesNorm.shape[1]):
+        if np.all(linesNorm[:,x]==linesNorm[0,x]):
+            print("ERROR: detect_outliers: all elements on linesNorm index %d are identical"%x,flush=True)
+            print("\t this may be due to, say, only detecting spatial features with elevation pi/2",flush=True)
+            quit()
     #standardize data for pca
     linesNorm = standardize_data(linesNorm)
    
@@ -250,9 +254,9 @@ def detect_outliers(img,lines=[],folder='',savename='temp',args=None):
         '''
         print('Set some variables')
         #Number of PCA components for decomposition
-        pcanum=3 #length, az, el (width and nfa agnostic)
+        pcanum=5 #length, az, el (width and nfa agnostic)
         #Number of PCA components for GMM separation
-        xnum = pcanum-1
+        xnum = max(pcanum-2,2)
         #GMM prior model setting 
         wtype='process'
         #Initial guess for number of GMM bases

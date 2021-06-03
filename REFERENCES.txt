@@ -1,3 +1,6 @@
+Feuge-Miller, Benjamin; Kucharski, Daniel; Iyer, Shiva; Esteva, Maria; Jah, Moriba, 2021, 
+"ASTRIANet Data for: Python Computational Inference from Structure (PyCIS)", https://doi.org/10.18738/T8/GV0ASD, Texas Data Repository, V1 
+
 Maria Esteva, Weijia Xu, Nevan Simone, Amit Gupta, Moriba Jah. Modeling Data Curation to Scientific Inquiry: 
 A Case Study for Multimodal Data Integration. The ACM/IEEE Joint Conference on Digital Libraries in 2020. 
 June 19-23, Wuhan, China. Doi: https://doi.org/10.1145/3383583.3398539 
@@ -55,6 +58,9 @@ IEEE Transactions on Intelligent Transportation Systems. 17. 1-14. 10.1109/TITS.
 
 Grosjean, B., Moisan, L. A-contrario Detectability of Spots in Textured Backgrounds.
 J Math Imaging Vis 33, 313 (2009). https://doi.org/10.1007/s10851-008-0111-4
+
+Rousseau, F., Blanc, F., Seze, J, Rumbach, L., Armspach, J., “An a contrario approach for outliers segmentation: Application to Multiple Sclerosis in MRI”,
+5th IEEE International Symposium on Biomedical Imaging: From Nano to Macro (2008): 9-12.
 
 Roizman, V., Jonckheere, M., & Pascal, F. (2021). Robust clustering and outlier rejection using the Mahalanobis 
 distance distribution. 2020 28th European Signal Processing Conference (EUSIPCO), 2448-2452.

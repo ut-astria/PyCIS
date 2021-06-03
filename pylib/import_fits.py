@@ -58,7 +58,9 @@ def import_fits(input_dir, savedata=0, subsample=1, framerange=[-1,-1], scale = 
             #print header and import data
             if printheader==1 and headerflag==0:
                 headerflag=1
-                print(hdul.info())
+                for entry in hdul[0].header:
+                    print(entry,data[entry],data.comments[entry])
+                #print(hdul.info())
 
             print('%d'%(imnum-firstframe),end=', ',flush=True)
             subs = hdul[0].data

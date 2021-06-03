@@ -308,6 +308,8 @@ double * LineSegmentDetection3( int * n_out,
 
 
 
+
+
 /*----------------------------------------------------------------------------*/
 /*----------------------- Center Line Segment Detector -----------------------*/
 /*----------------------------------------------------------------------------*/
@@ -488,12 +490,15 @@ double * LineSegmentDetection3Center( int * n_out,
   
   //INSTANTIATION
   int lx,ly,lz,lx2,ly2,lz2;
+  int lxx,lyy,lzz;
+  int searchbox = 2;
   int tempx, tempy, tempz;
   int ls_count2=0; 
   int ls_count2reject=0;
+  double grads_az, grads_el;
   density_th = 0.;
   angles3 lstheta;
-
+  
   //Iterate over edge lines - no centerlines can meaningfully exist without edges
   for(int lidx=0; lidx<ls_count; lidx++)
   { 
@@ -516,72 +521,83 @@ double * LineSegmentDetection3Center( int * n_out,
       {continue;} //if both points outside valid domain, skip
       tempx = lx; tempy = ly; tempz = lz;
       lx = lx2; ly = ly2; lz = lz2;
-      lx2 = tempx; lz2 = tempz; lz2 = tempz;
+      lx2 = tempx; ly2 = tempy; lz2 = tempz;
     }
-
-    //Begin main iteration
-    if( ((omp_get_wtime()-timeall)<timelim) && 
-        used->data[ lz + (lx + ly  * xsize) * zsize ] == NOTUSED &&
-        azimg[ lz + (lx + ly * xsize) * zsize ] != NOTDEF  &&
-        elimg[ lz + (lx + ly * xsize) * zsize ] != NOTDEF  )
+    //get expected centerline from prior  
+    lstheta = line_angle3(lx,ly,lz,lx2,ly2,lz2);   
+    //iterate over local search region
+    lxx=lx; lyy=ly; lzz=lz;
+    for(lx=lxx-searchbox;lx<lxx+searchbox;lx++)
+    for(ly=lyy-searchbox;ly<lyy+searchbox;ly++)
+    for(lz=lzz-searchbox;lz<lzz+searchbox;lz++)
     {
+      if ((lx<0) || (ly<0) || (lx>=xsize) || (ly>=ysize)) continue;
+      double grads_az = angles->az->data[ lz + zsize*(lx + ly * xsize) ]; 
+      double grads_el = angles->el->data[ lz + zsize*(lx + ly * xsize) ]; 
+      if (!isaligned3ORTH(grads_az,grads_el,lstheta->az,lstheta->el,prec)) continue;
 
-      //get expected centerline from prior
-      lstheta = line_angle3(lx,ly,lz,lx2,ly2,lz2);  
 
-      /* find the region of connected point and ~equal angle */
-      region3_growORTH( lx, ly, lz, modgrad, angles, reg, &reg_size,
-                    &reg_angle, &lstheta, used, prec, NOUT2);
-
-      /* reject small regions */
-      if( reg_size < min_reg_size )
+      //Begin main iteration
+      if( ((omp_get_wtime()-timeall)<timelim) && 
+          used->data[ lz + (lx + ly  * xsize) * zsize ] == NOTUSED &&
+          azimg[ lz + (lx + ly * xsize) * zsize ] != NOTDEF  &&
+          elimg[ lz + (lx + ly * xsize) * zsize ] != NOTDEF  )
       {
-        ++ls_count2reject;
-        continue;
-      }
-      
-      /* construct rectangular approximation for the region */
-      region2rect3(reg,reg_size,modgrad,reg_angle,prec,p,&rec,1);
-      
-      /* Check if the rectangle exceeds the minimal density */
-      if( !refine3( reg, &reg_size, modgrad, reg_angle,
-                    prec, p, &rec, used, angles,density_th,NOUT2,1 ) ) 
-      { 
-        ++ls_count2reject;
-        continue;
+
+        /* find the region of connected point and ~equal angle */
+        region3_growORTH( lx, ly, lz, modgrad, angles, reg, &reg_size,
+                      &reg_angle, &lstheta, used, prec, NOUT2);
+
+        /* reject small regions */
+        if( reg_size < min_reg_size )
+        {
+          ++ls_count2reject;
+          continue;
+        }
+        
+        /* construct rectangular approximation for the region */
+        region2rect3(reg,reg_size,modgrad,reg_angle,prec,p,&rec,1);
+        
+        /* Check if the rectangle exceeds the minimal density */
+        if( !refine3( reg, &reg_size, modgrad, reg_angle,
+                      prec, p, &rec, used, angles,density_th,NOUT2,1 ) ) 
+        { 
+          ++ls_count2reject;
+          continue;
+        }
+
+        /* compute NFA value */ 
+        log_nfa = rect3_improve(&rec,angles,logNT,log_eps,output,output_2,output_4,
+                                outputP,outputP_2,outputP_4,
+                                NOUT,min_reg_size,min_reg_size_2,min_reg_size_4,1);
+
+        rec.length = dist3(rec.x1,rec.y1,rec.z1,rec.x2,rec.y2,rec.z2);
+    
+        if( log_nfa <= log_eps ) 
+        {
+          ++ls_count2reject;
+          continue;
+        }
+
+        /* A New Line Segment was found! */
+        ++ls_count2;  /* increase line segment counter */
+        
+        /* add line segment found to output */
+        if(scale != 1.0)
+        {
+          rec.x1/=scale; rec.y1/=scale; rec.z1/=scale;
+          rec.x2/=scale; rec.y2/=scale; rec.z2/=scale;
+          rec.width1/=scale; rec.width2/=scale;
+        }
+        add_10tuple( out2, rec.x1, rec.y1, rec.z1, rec.x2, rec.y2, rec.z2, 
+                          rec.width1, rec.width2, rec.p, log_nfa );
       }
 
-      /* compute NFA value */ 
-      log_nfa = rect3_improve(&rec,angles,logNT,log_eps,output,output_2,output_4,
-                              outputP,outputP_2,outputP_4,
-                              NOUT,min_reg_size,min_reg_size_2,min_reg_size_4,1);
-
-      rec.length = dist3(rec.x1,rec.y1,rec.z1,rec.x2,rec.y2,rec.z2);
-  
-      if( log_nfa <= log_eps ) 
+      else if( ((omp_get_wtime()-timeall)>=timelim) && (printout==0))
       {
-        ++ls_count2reject;
-        continue;
-      }
-
-      /* A New Line Segment was found! */
-      ++ls_count2;  /* increase line segment counter */
-      
-      /* add line segment found to output */
-      if(scale != 1.0)
-      {
-        rec.x1/=scale; rec.y1/=scale; rec.z1/=scale;
-        rec.x2/=scale; rec.y2/=scale; rec.z2/=scale;
-        rec.width1/=scale; rec.width2/=scale;
-      }
-      add_10tuple( out2, rec.x1, rec.y1, rec.z1, rec.x2, rec.y2, rec.z2, 
-                        rec.width1, rec.width2, rec.p, log_nfa );
+        printf("\nTIMEOUT %.2f\n",omp_get_wtime()-timeall);fflush(stdout);printout=1;
+      } 
     }
-
-    else if( ((omp_get_wtime()-timeall)>=timelim) && (printout==0))
-    {
-      printf("\nTIMEOUT %.2f\n",omp_get_wtime()-timeall);fflush(stdout);printout=1;
-    } 
   }
 
   printf("\nSTAGE2 %d/%d updated, %d/%d originals, %d/%d deleted... in %.2f\n",ls_count2,ls_count,ls_count2reject,ls_count,(ls_count-ls_count2-ls_count2reject),ls_count,omp_get_wtime()-timeall);fflush(stdout); 

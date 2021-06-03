@@ -1,8 +1,5 @@
 TODO: 
     High-Priority:
-        * update regions3.c/region3_grow() and grdient.c/isaligned3() to correct
-            region growing of lines in the spatial plane.  Neccessary to ensure 
-            enough star-streaks for plate solving step
         * astrometry.net plate solving after edge detections
         * update regions3.c/regions3_growORTH() to solve linearity constraint, 
             using non-linear region growing using transformed line priors
@@ -13,10 +10,32 @@ TODO:
         * sliding window with overlap given large data for import_fits,
             to prevent memory crashing
         * ASTRIA-Net pipeline integration 
+        * differentiate spatial and temporal markov kernels,
+            medium-priority due to similarity of results when tested
     Low-Priority
         * for acceleration when not involving loops to compute markov kernels,
             compute gradient matrices only once and share across LSD3M
     
+
+------------------------------------------------------------------
+
+06/02/2021
+    *Reformulate region3s.c/region3_grow() and regions3.c/get_theta3()
+        with new antipodal correction via gradient.c/isaligned3_sign(), align3()
+    *Correct conflict in spatiotemporal gradient computation by separating 
+        spatial (2D) and temporal (3D) detections, in lsd3b.c
+        * region2.c / region_growORTH(), rect_improve_update(), rect_imporveORTH(), refineORTH()
+        * rectangles2.v/rect_nfaORTH
+        * interface.c / lsd3b(), lsd3centerb() [calling functions]
+        * lsd3b.c [entierly new - adapted from lsd2, lsd3]
+        * pycis.c [markovOnly==0 call from lsd3 to lsd3b]
+    *Improved PCA scheme in detect_outliers.py/detect_outliers()
+        *Utilize width infomation with stronger dimension reduction
+        *Projection from rank-5 space (length, orientation, widths) to rank-3
+    *Improved plotting function print_detections.py/print_detections()
+        *automatic scalling for reduced storage cost 
+        *built-in printing of GIF files 
+
 ------------------------------------------------------------------
 
 04/30/2021

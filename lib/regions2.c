@@ -280,6 +280,79 @@ void region_grow( int x, int y, image_double angles, struct point * reg,
 }
 
 /*----------------------------------------------------------------------------*/
+/** Build a region of pixels that share the same angle,
+ * orthogonal to a known prior centerline, 
+ *  up to a tolerance 'prec', starting at point (x,y).
+ * NOTE: This is much easier than the 3D case, since
+ * the orthogonal directions are finite in the spatial plane
+ */
+void region_growORTH( int x, int y, image_double angles, 
+                        struct point * reg, int * reg_size, 
+                        double * reg_angle, double * lstheta, 
+                        image_char used, double prec)
+{
+  double sumdx,sumdy;
+  int xx,yy,i;
+
+  /* check parameters */
+  if( x < 0 || y < 0 || x >= (int) angles->xsize || y >= (int) angles->ysize )
+    error("region_grow: (x,y) out of the image.");
+  if( angles == NULL || angles->data == NULL )
+    error("region_grow: invalid image 'angles'.");
+  if( reg == NULL ) error("region_grow: invalid 'reg'.");
+  if( reg_size == NULL ) error("region_grow: invalid pointer 'reg_size'.");
+  if( reg_angle == NULL ) error("region_grow: invalid pointer 'reg_angle'.");
+  if( used == NULL || used->data == NULL )
+    error("region_grow: invalid image 'used'.");
+
+  /* first point of the region */
+  *reg_size = 1;
+  reg[0].x = x;
+  reg[0].y = y;
+
+
+  //*reg_angle = angles->data[x+y*angles->xsize];  /* region's angle */
+  //Define prior as the centerline, so sumdx/dy should be parallel
+  *reg_angle = *lstheta;
+  sumdx = cos(*reg_angle);
+  sumdy = sin(*reg_angle);
+  used->data[x+y*used->xsize] = USED;
+  /*To check 'orthogonal alignment', can simply add pi/2V*/
+  double  temp_angle;
+
+  /* try neighbors as new region points */
+  for(i=0; i<(*reg_size); i++)
+    for(xx=reg[i].x-1; xx<=reg[i].x+1; xx++)
+      for(yy=reg[i].y-1; yy<=reg[i].y+1; yy++)
+      {
+
+        if( xx>=0 && yy>=0 && xx<(int)used->xsize && yy<(int)used->ysize &&
+            used->data[xx+yy*used->xsize] != USED &&
+            isalignedORTH(xx,yy,angles,*reg_angle,prec) )
+          {
+            /* add point */
+            used->data[xx+yy*used->xsize] = USED;
+            reg[*reg_size].x = xx;
+            reg[*reg_size].y = yy;
+            ++(*reg_size);
+
+            /* update region's centerline (orthogonal) angle */
+            /*ensure orthogonal direction is properly aligned parallel to region*/
+            temp_angle = angles->data[xx+yy*angles->xsize];
+            if ((sumdx*(cos(temp_angle)) + sumdy*sin(temp_angle))<0)
+            {
+              temp_angle = temp_angle + M_PI/2.;
+              if (temp_angle>M_PI) temp_angle -= M_PI;
+            }
+            sumdx += cos( temp_angle );
+            sumdy += sin( temp_angle );
+            //fit prior line in region growing - we know these have a high probability of existance
+            //*reg_angle = atan2(sumdy,sumdx);
+          }
+      }
+}
+
+/*----------------------------------------------------------------------------*/
 /** Try some rectangles variations to improve NFA value. Only if the
     rectangle is not meaningful (i.e., log_nfa <= log_eps).
  */
@@ -421,6 +494,157 @@ double rect_improve( struct rect * rec, image_double angles,
 }
 
 /*----------------------------------------------------------------------------*/
+/** Helper function for trying variations to improve NFA value.
+ */
+double rect_improve_update(struct rect  r, image_double angles,double logNT,int Nnfa,
+                                 double* mnfa, double* mnfap, int minsize,
+                                 double* mnfa_2,double* mnfap_2, int minsize2,
+                                 double* mnfa_4,double* mnfap_4, int minsize4,
+                                 double p1check, double p2check,
+                                 struct rect * rec,double log_nfa,int orth)
+{
+  double log_nfa_new;
+  /*Pick which NFA function to call based on sequence flag "orth" and the r.p value*/
+  if (orth==0)
+  {
+    if(r.p>=p1check)
+      log_nfa_new = rect_nfa(&r,angles,logNT,mnfa,Nnfa,minsize);
+    else if(r.p>=p2check)
+      log_nfa_new = rect_nfa(&r,angles,logNT,mnfa_2,Nnfa,minsize2);
+    else
+      log_nfa_new = rect_nfa(&r,angles,logNT,mnfa_4,Nnfa,minsize4);
+  }
+  else if (orth==1)
+  {
+    if(r.p>=p1check)
+      log_nfa_new = rect_nfaORTH(&r,angles,logNT,mnfa,mnfap,Nnfa,minsize);
+    else if(r.p>=p2check)
+      log_nfa_new = rect_nfaORTH(&r,angles,logNT,mnfa_2,mnfap_2,Nnfa,minsize2);
+    else
+      log_nfa_new = rect_nfaORTH(&r,angles,logNT,mnfa_4,mnfap_4,Nnfa,minsize4);
+  }
+  else error("rect_improve_update: post flag not recognized 0/1");
+
+  /*Return original estimate or update rectangle appropriately*/
+  if (log_nfa==-1)
+    return log_nfa_new;
+  if(log_nfa_new > log_nfa)
+  {
+    rect_copy(&r,rec);
+    return log_nfa_new;
+  }
+  else return log_nfa;
+   
+}
+
+/*----------------------------------------------------------------------------*/
+/** Try some rectangles variations to improve NFA value. Only if the
+    rectangle is not meaningful (i.e., log_nfa <= log_eps).
+ */
+double rect_improveORTH( struct rect * rec, image_double angles,
+                            double logNT, double log_eps,
+                            double* mnfa,double* mnfa_2,double* mnfa_4,
+                            double*mnfap,double*mnfap_2,double*mnfap_4,
+                            int Nnfa,int minsize, int minsize2,int minsize4, int orth )
+{
+  struct rect r;
+  double log_nfa,log_nfa_new;
+  double delta = 0.5;
+  double delta_2 = delta / 2.0;
+  int n;
+  log_nfa=-1;
+  //geometric width reduction
+  double factor = 1./sqrt(2.);
+  rect_copy(rec,&r);
+  //MNFA markov table flag
+  double p1check = (double)r.p+.0001;
+  double p2check = (double)r.p/2. + 0.0001;
+
+
+
+  log_nfa=rect_improve_update(r,angles,logNT,Nnfa,
+		mnfa,mnfap,minsize,mnfa_2,mnfap_2,minsize2,mnfa_4,mnfap_4,minsize4,
+    p1check,p2check,rec,log_nfa,orth);
+  if( log_nfa > log_eps ) return log_nfa;
+
+  /* try finer precisions */
+  rect_copy(rec,&r);
+  for(n=0; n<1; n++)
+  {
+    r.p /= 2.0;
+    r.prec = r.p * M_PI;
+    log_nfa=rect_improve_update(r,angles,logNT,Nnfa,
+		  mnfa,mnfap,minsize,mnfa_2,mnfap_2,minsize2,mnfa_4,mnfap_4,minsize4,
+      p1check,p2check,rec,log_nfa,orth);
+  }
+  if( log_nfa > log_eps ) return log_nfa;
+
+  /* try to reduce width */
+  rect_copy(rec,&r);
+  for(n=0; n<5; n++)
+  {
+    if((r.width*factor) >= 0.5) //( (r.width - delta) >= 0.5 )
+    {
+      r.width *= factor; //-= delta;
+      log_nfa=rect_improve_update(r,angles,logNT,Nnfa,
+        mnfa,mnfap,minsize,mnfa_2,mnfap_2,minsize2,mnfa_4,mnfap_4,minsize4,
+        p1check,p2check,rec,log_nfa,orth);
+    }
+  }
+  if( log_nfa > log_eps ) return log_nfa;
+
+  /* try to reduce one side of the rectangle */
+  rect_copy(rec,&r);
+  for(n=0; n<5; n++)
+  {
+    if((r.width*factor) >= 0.5) //( (r.width - delta) >= 0.5 )
+    {
+      delta_2 = r.width*(1.0-factor)/2.;
+      r.x1 += -r.dy * delta_2;
+      r.y1 +=  r.dx * delta_2;
+      r.x2 += -r.dy * delta_2;
+      r.y2 +=  r.dx * delta_2;
+      r.width -= delta;
+      log_nfa=rect_improve_update(r,angles,logNT,Nnfa,
+        mnfa,mnfap,minsize,mnfa_2,mnfap_2,minsize2,mnfa_4,mnfap_4,minsize4,
+        p1check,p2check,rec,log_nfa,orth);
+    }
+  }
+  if( log_nfa > log_eps ) return log_nfa;
+
+  /* try to reduce the other side of the rectangle */
+  rect_copy(rec,&r);
+  for(n=0; n<5; n++)
+  {
+    if((r.width*factor) >= 0.5) //( (r.width - delta) >= 0.5 )
+    {
+      delta_2 = r.width*(1.0-factor)/2.;
+      r.x1 -= -r.dy * delta_2;
+      r.y1 -=  r.dx * delta_2;
+      r.x2 -= -r.dy * delta_2;
+      r.y2 -=  r.dx * delta_2;
+      r.width -= delta;
+      log_nfa=rect_improve_update(r,angles,logNT,Nnfa,
+        mnfa,mnfap,minsize,mnfa_2,mnfap_2,minsize2,mnfa_4,mnfap_4,minsize4,
+        p1check,p2check,rec,log_nfa,orth);
+    }
+  }
+  if( log_nfa > log_eps ) return log_nfa;
+
+  /* try even finer precisions */
+  rect_copy(rec,&r);
+  for(n=0; n<1; n++)
+  {
+    r.p /= 2.0;
+    r.prec = r.p * M_PI;
+    log_nfa=rect_improve_update(r,angles,logNT,Nnfa,
+        mnfa,mnfap,minsize,mnfa_2,mnfap_2,minsize2,mnfa_4,mnfap_4,minsize4,
+        p1check,p2check,rec,log_nfa,orth);
+  }
+  return log_nfa;
+}
+
+/*----------------------------------------------------------------------------*/
 /** Reduce the region size, by elimination the points far from the
     starting point, until that leads to rectangle with the right
     density of region points or to discard the region if too small.
@@ -492,6 +716,7 @@ int reduce_region_radius( struct point * reg, int * reg_size,
   /* if this point is reached, the density criterion is satisfied */
   return TRUE;
 }
+
 
 /*----------------------------------------------------------------------------*/
 /** Refine a rectangle.
@@ -577,3 +802,93 @@ int refine( struct point * reg, int * reg_size, image_double modgrad,
   return TRUE;
 }
 
+/*----------------------------------------------------------------------------*/
+/** Refine a rectangle.
+
+    For that, an estimation of the angle tolerance is performed by the
+    standard deviation of the angle at points near the region's
+    starting point. Then, a new region is grown starting from the same
+    point, but using the estimated angle tolerance. If this fails to
+    produce a rectangle with the right density of region points,
+    'reduce_region_radius' is called to try to satisfy this condition.
+ */
+int refineORTH( struct point * reg, int * reg_size, image_double modgrad,
+                   double reg_angle, double prec, double p, struct rect * rec,
+                   image_char used, image_double angles, double density_th ,int orth)
+{
+  double angle,ang_d,mean_angle,tau,density,xc,yc,ang_c,sum,s_sum;
+  int i,n;
+
+  /* check parameters */
+  if( reg == NULL ) error("refine: invalid pointer 'reg'.");
+  if( reg_size == NULL ) error("refine: invalid pointer 'reg_size'.");
+  if( prec < 0.0 ) error("refine: 'prec' must be positive.");
+  if( rec == NULL ) error("refine: invalid pointer 'rec'.");
+  if( used == NULL || used->data == NULL )
+    error("refine: invalid image 'used'.");
+  if( angles == NULL || angles->data == NULL )
+    error("refine: invalid image 'angles'.");
+  if((orth!=1)&&(orth!=0)) error("refineORTH: orth flag not 0/1");
+
+  /* compute region points density */
+  density = (double) *reg_size /
+                         ( dist(rec->x1,rec->y1,rec->x2,rec->y2) * rec->width );
+
+  /* if the density criterion is satisfied there is nothing to do */
+  if( density >= density_th ) return TRUE;
+
+  /*------ First try: reduce angle tolerance ------*/
+
+  /* compute the new mean angle and tolerance */
+  xc = (double) reg[0].x;
+  yc = (double) reg[0].y;
+  ang_c = angles->data[ reg[0].x + reg[0].y * angles->xsize ];
+  sum = s_sum = 0.0;
+  n = 0;
+  for(i=0; i<*reg_size; i++)
+    {
+      used->data[ reg[i].x + reg[i].y * used->xsize ] = NOTUSED;
+      if( dist( xc, yc, (double) reg[i].x, (double) reg[i].y ) < rec->width )
+        {
+          angle = angles->data[ reg[i].x + reg[i].y * angles->xsize ];
+          ang_d = angle_diff_signed(angle,ang_c);
+          sum += ang_d;
+          s_sum += ang_d * ang_d;
+          ++n;
+        }
+    }
+  mean_angle = sum / (double) n;
+  tau = 2.0 * sqrt( (s_sum - 2.0 * mean_angle * sum) / (double) n
+                         + mean_angle*mean_angle ); /* 2 * standard deviation */
+
+  /* find a new region from the same starting point and new angle tolerance */
+  tau=prec/2.0;
+  if(orth==0)
+    region_grow(reg[0].x,reg[0].y,angles,reg,reg_size,&reg_angle,used,tau);
+  else
+    region_growORTH( reg[0].x,reg[0].y, angles, 
+                      reg,reg_size, &reg_angle, &reg_angle, used, tau);
+
+  /*prec = M_PI * ang_th / 180.0;
+  p = ang_th / 180.0;*/
+  p=tau/M_PI;
+  /* if the region is too small, reject */
+  if( *reg_size < 2 ) return FALSE;
+
+  /* re-compute rectangle */
+  region2rect(reg,*reg_size,modgrad,reg_angle,tau,p,rec);
+ 
+
+
+  /* re-compute region points density */
+  density = (double) *reg_size /
+                      ( dist(rec->x1,rec->y1,rec->x2,rec->y2) * rec->width );
+
+  /*------ Second try: reduce region radius ------*/
+  if( density < density_th )
+    return reduce_region_radius( reg, reg_size, modgrad, reg_angle, prec, p,
+                                 rec, used, angles, density_th );
+
+  /* if this point is reached, the density criterion is satisfied */
+  return TRUE;
+}

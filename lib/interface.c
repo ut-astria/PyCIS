@@ -41,6 +41,7 @@ Oden Institute Computational Astronautical Sciences and Technologies (CAST) grou
 #include "markov.h"
 #include "lsd2.h"
 #include "lsd3.h"
+#include "lsd3b.h"
 
 /*----------------------------------------------------------------------------*/
 /*----------------------- LSD-WRAPPER INTERFACES -----------------------------*/
@@ -88,6 +89,26 @@ double * lsd3(int * n_out, double * img, int X, int Y, int Z,
 }
 
 /*----------------------------------------------------------------------------*/
+/** LSD3 Simple Interface.
+ */
+double * lsd3b(int * n_out, double * img, int X, int Y, int Z, 
+              double *inputv, double inputv_size,double * inputvorth)
+{ 
+  double ang_th;   /* Gradient angle tolerance in degrees.           */
+  ang_th=inputv[4];
+  double log_eps = 0.0;     /* Detection threshold: -log10(NFA) > log_eps     */
+  log_eps=-log10(inputv[1]);
+
+  double density_th = 0.0;  /* Minimal density of region points in rectangle. */
+  density_th=inputv[2];
+  int n_bins = 1024;        /* Number of bins in pseudo-ordering of gradient
+                               modulus.                                       */
+  return LineSegmentDetection3b( n_out, img, X, Y, Z,
+                              ang_th, log_eps, density_th, n_bins,
+                              NULL,NULL,NULL,NULL ,inputv,inputv_size,inputvorth);
+}
+
+/*----------------------------------------------------------------------------*/
 /** LSD3 Centerline Simple Interface.
  */
 double * lsd3center(int * n_out, 
@@ -105,6 +126,28 @@ double * lsd3center(int * n_out,
   int n_bins = 1024;        /* Number of bins in pseudo-ordering of gradient
                                modulus.                                       */
   return LineSegmentDetection3Center( n_out, img, X, Y, Z, img0, X0, Y0, Z0,
+                              ang_th, log_eps, density_th, n_bins,
+                              NULL,NULL,NULL,NULL ,inputv,inputv_size,inputvorth);
+}
+
+/*----------------------------------------------------------------------------*/
+/** LSD3 Centerline Simple Interface.
+ */
+double * lsd3centerb(int * n_out, 
+               double * img, int X, int Y, int Z,
+               double * img0, int X0, int Y0, int Z0,
+               double *inputv, double inputv_size,double * inputvorth)
+{ 
+  double ang_th;   /* Gradient angle tolerance in degrees.           */
+  ang_th=inputv[4];
+  double log_eps = 0.0;     /* Detection threshold: -log10(NFA) > log_eps     */
+  log_eps=-log10(inputv[1]);
+
+  double density_th = 0.0;  /* Minimal density of region points in rectangle. */
+  density_th=inputv[2];
+  int n_bins = 1024;        /* Number of bins in pseudo-ordering of gradient
+                               modulus.                                       */
+  return LineSegmentDetection3Centerb( n_out, img, X, Y, Z, img0, X0, Y0, Z0,
                               ang_th, log_eps, density_th, n_bins,
                               NULL,NULL,NULL,NULL ,inputv,inputv_size,inputvorth);
 }

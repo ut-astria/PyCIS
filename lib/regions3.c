@@ -159,6 +159,8 @@ angles3 get_theta3( struct point3 * reg, int reg_size, double x, double y, doubl
   gsl_matrix_free(Imat);
   gsl_eigen_symmv_free(ework);
 
+  if(theta->el > M_PI/2.) //align with positive z axis
+    align3(&theta->az,&theta->el);
 
   //For orthogonal case (centerline anlysis), confirm az/el principal is aligned to prior
   if(orth==1)
@@ -373,6 +375,10 @@ void region3_grow(int x, int y,int z, grads angles,
           reg[*reg_size].y = yy;
           reg[*reg_size].z = zz;
           ++(*reg_size);
+
+          /*correct alignment for averaging*/
+          if(!isaligned3_sign(grads_az,grads_el,reg_az,reg_el,prec))
+            align3(&grads_az,&grads_el);
 
           /* update region's angle */
           sincos(grads_az,&saz,&caz);

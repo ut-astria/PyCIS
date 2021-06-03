@@ -51,8 +51,10 @@ grads ll_angle3( image3_double in,
                         unsigned int n_bins,double alpha);
 
 int isaligned( int x, int y, image_double angles, double theta,  double prec );
+int isalignedORTH( int x, int y, image_double angles, double theta,  double prec );
 int isaligned3(double grads_az,double grads_el,double theta_az,double theta_el,double prec);
+int isaligned3_sign(double grads_az,double grads_el,double theta_az,double theta_el,double prec);
 int isaligned3ORTH(double grads_az,double grads_el,double theta_az,double theta_el,double prec);
-
+void align3(double * az, double * el);
 //Close header
 #endif /* !LSD_HEADER */

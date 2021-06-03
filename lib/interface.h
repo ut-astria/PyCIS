@@ -35,7 +35,16 @@ double * lsd3(int * n_out,
             double * img, int X, int Y, int Z, 
             double *inputv, double inputv_size,double * inputvorth);
 
+double * lsd3b(int * n_out,
+            double * img, int X, int Y, int Z, 
+            double *inputv, double inputv_size,double * inputvorth);
+
 double * lsd3center(int * n_out, 
+            double * img, int X, int Y, int Z,
+            double * img0, int X0, int Y0, int Z0,
+            double *inputv, double inputv_size,double * inputvorth);
+
+double * lsd3centerb(int * n_out, 
             double * img, int X, int Y, int Z,
             double * img0, int X0, int Y0, int Z0,
             double *inputv, double inputv_size,double * inputvorth);

@@ -112,7 +112,7 @@ double * LineSegmentDetection( int * n_out,
   }
   else angles = ll_angle( image, &list_p, &mem_p, &modgrad,
 		       (unsigned int) n_bins,beta);
-//set size variables
+  //set size variables
   xsize = angles->xsize;
   ysize = angles->ysize;
 

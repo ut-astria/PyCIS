@@ -1,6 +1,7 @@
 numpy
 scipy
 imageio
+imageio-ffmpeg
 opencv-python
 scikit-learn
 astropy

@@ -2,9 +2,9 @@
 
    A-contrario inference of object trajectories from structure-in-noise, 
    building on Line Segment Detection (LSD) for dense electro-optical time-series data
-   formatted as 3D data cubes, with markov kernel estimation for non-uniform noise models.
+   formatted as 3D data cubes, with markov kernel estimation for non-independent noise models.
    LSD C-extension module equipped with multi-layer a-contrario inference for center-line features
-   from gradient information.  Python modules provided for inference of feature classifications
+   from spatio-temporal gradient information.  Python modules provided for inference of feature classifications
    using second-order gestalts, and ingesting/plotting of FITS-format data files.
 
    This software is under active development.
@@ -32,6 +32,9 @@ we use the NFA framework to measure edge surface features in the video data
 given no prior information, perform a second round of NFA analysis to detect 
 center line features using the new prior edge information, and finally perform 
 second-order a-contrario analysis for outlier detection.
+The edge and centerline detection steps first perform spatial detection on each individual frame, 
+and then continue with temporal detections with a cubic 3D gradient kernel, accounting for
+the exclusion principle, in order to accuratly measure single-frame events.  
 This second-order analysis accounts for spurious structures in noise
 (e.g. star motion, telescope noise) which have a large number of detectable features 
 and hence should be rejected under the paradigm.  
@@ -89,9 +92,9 @@ through UT CAST [see citations in DATASET section below].
     * data2_name.npy - center line detections
     * goodlines_name.npy - 2nd-order meaningful detections
     * badlines_name.npy - 1st-order meaningful only detections
-    * img_name.npy - last fit frame data with projected detections (2nd order in red)
-    * vidAll_name.npy - animated fits data with projected detections (2nd order in red) 
-    * vidObj_name.npy - animated fits data with only 2nd-order projected detections
+    * img_name.png - last fit frame data with projected detections (2nd order in red)
+    * vidAll_name.avi/.gif - animated fits data with projected detections (2nd order in red) 
+    * vidObj_name.avi/.gif - animated fits data with only 2nd-order projected detections
 
 Runtime estimates are ~30 min on TACC for an unscaled 26-frame subset (4906x4906px)
 ~10min for 0.5 scaling, but pending update of gradient analysis method to provide enough points for outlier detection. 
@@ -103,15 +106,12 @@ Runtime not yet estimated for local machines due to size of full-scale data sets
 
 ![Demo Video](docs/videoAll_20201220_45696_starlink-1422.gif)
 
-Many single-frame features (namely star-streak features) 
-are visual gestalts but are not registered as 'meaninful events'
-(as of version 0.1).
-Additionally, the track is lost on the last frames 
-of the vidObj*.avi demo video.  
-These issues appear to be due to the use of a single cubic 3D kernel for gradient computation, which incorrectly computes elevation angles due to the limited temporal resolution.  A joint spatial (2D) and temporal (3D) detection pipeline with a unified exclusion principle is slated for a near-term update.  
-Linearity constraints on region-growing of center-line features (non-constant velocity) may be causing issues with the object track near the end of the demo video, and this is under investigation, along with implementation of non-linear trajectory priors.
+Some low-SNR star streaks are lost on individual-frame detections, 
+likely due to building the markov probability kernels from the image itself.
+Using a star-free image prior may enhance detection of dim stars.
+Minor inaccuracies in the object centerline are due to linearity constraints, to be relaxed in favor of non-linear centerline curves in the future.  
 
-Note: This video has been converted to .gif format and rescaled to 50% for github rendering.
+Note: This video is generated at 25% scale for github rendering.
 
 ------------------------------------------------------------------
 
@@ -123,7 +123,11 @@ NMSkies telecope of the UTA-ASTRIA ASTRIA-Net telescope network.
 Specifically, the frames are a track of the Starlink-1422 satellite 
 on the night of Dec. 20, 2020.  Relevant observation data can be found 
 in the FITS headers, printable by turning on the 'headerflag' variable in 
-import_fits.py.  See citations below.  
+import_fits.py.  See citation below.  
+
+Feuge-Miller, Benjamin; Kucharski, Daniel; Iyer, Shiva; Esteva, Maria; Jah, Moriba, 2021,
+"ASTRIANet Data for: Python Computational Inference from Structure (PyCIS)", 
+https://doi.org/10.18738/T8/GV0ASD, Texas Data Repository, V1
 
 Maria Esteva, Weijia Xu, Nevan Simone, Amit Gupta, Moriba Jah. 
 Modeling Data Curation to Scientific Inquiry: 
@@ -160,7 +164,7 @@ URL: http://www.tacc.utexas.edu
     * gaussians -     gaussian down-sampling for antialiasing
     * gradient -      compute gradient magnitude/orientation, and alignment checks
     * interface -     pipeline helpers for pycis.c
-    * lsd(2/3) -      main lsd pipelines
+    * lsd(2/3/3b) -   main lsd pipelines (spatial, temporal, and unified)
     * markov -        estimate markov kernels and build transition matrices
     * misc -          lists, angle functions
     * NFA -           estimate markov or negative binomial approximation tail probability
@@ -179,6 +183,7 @@ URL: http://www.tacc.utexas.edu
 (see REFERENCES.txt for full citations)
 
 * Data resources:
+    * ASTRIANet [Feuge-Miller_2021]
     * ASTRIA-Graph [Esteva_2020, Simone_2021]
 
 * Background NFA formulations:

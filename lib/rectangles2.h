@@ -67,7 +67,8 @@ void ri_inc(rect_iter * i);
 rect_iter * ri_ini(struct rect * r);
 double rect_nfa(struct rect * rec, image_double angles, 
                         double logNT,double *image,int N,int minreg);
-
+double rect_nfaORTH(struct rect * rec, image_double angles, 
+                        double logNT,double *image,double *pset,int N,int minreg);
 
 
 //Close header

@@ -32,6 +32,7 @@ double * LineSegmentDetection3( int * n_out,
                                int n_bins, int ** reg_img, 
                                int * reg_x, int * reg_y, int * reg_z, 
                                double * inputv, double inputv_size, double * inputvorth);
+
 double * LineSegmentDetection3Center( int * n_out,
                                double * img, int X, int Y, int Z,
                                double * img0, int X0, int Y0, int Z0,

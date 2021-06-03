@@ -530,8 +530,8 @@ static PyObject * pycis(PyObject * self, PyObject * args)
     if(Z<=1) out = lsd(&n,image,X,Y,inputv,inputv_size);
     else
     {
-      if(X0==0) out = lsd3(&n,image,X,Y,Z,inputv,inputv_size,inputvorth);
-      else out = lsd3center(&n,image,X,Y,Z,image0,X0,Y0,Z0,inputv,inputv_size,inputvorth);
+      if(X0==0) out = lsd3b(&n,image,X,Y,Z,inputv,inputv_size,inputvorth);
+      else out = lsd3centerb(&n,image,X,Y,Z,image0,X0,Y0,Z0,inputv,inputv_size,inputvorth);
     } 
   }
   else if(markovOnly==1)

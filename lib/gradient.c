@@ -463,9 +463,18 @@ grads ll_angle3( image3_double in,
             yy = (j+h)>0?(j+h):0; yy = yy<(Y-1)?yy:(Y-1);
             zz = (k+h)>0?(k+h):0; zz = zz<(Z-1)?zz:(Z-1);
             coeff=exp(-(double) abs(h)/beta);
-            Mdx+=coeff*img1[k +Z*(i +X*yy)];
-            Mdy+=coeff*img1[zz+Z*(i +X*j )];
-            Mdz+=coeff*img1[k +Z*(xx+X*j )];
+            if (Z>1)
+            {  
+              Mdx+=coeff*img1[k +Z*(i +X*yy)];
+              Mdy+=coeff*img1[zz+Z*(i +X*j )];
+              Mdz+=coeff*img1[k +Z*(xx+X*j )];
+            }
+            else
+            {
+              Mdx+=coeff*img1[k +Z*(i +X*yy)];
+              Mdy = img1[k+Z*(i+X*j)];
+            }
+
           }
           gradx1[k+Z*(i+X*j)]=Mdx;
           grady1[k+Z*(i+X*j)]=Mdy;
@@ -487,9 +496,17 @@ grads ll_angle3( image3_double in,
             yy = (j+h)>0?(j+h):0; yy = yy<(Y-1)?yy:(Y-1);
             zz = (k+h)>0?(k+h):0; zz = zz<(Z-1)?zz:(Z-1);
             coeff=exp(-(double) abs(h)/beta);
-            Mdx+=coeff*gradx1[zz+Z*(i +X*j)];
-            Mdy+=coeff*grady1[k +Z*(xx+X*j )];
-            Mdz+=coeff*gradz1[k +Z*(i +X*yy)];
+            if (Z>1)
+            {  
+              Mdx+=coeff*gradx1[zz+Z*(i +X*j)];
+              Mdy+=coeff*grady1[k +Z*(xx+X*j )];
+              Mdz+=coeff*gradz1[k +Z*(i +X*yy)];
+            }
+            else
+            {
+              Mdx = gradx1[k+Z*(i+X*j)];
+              Mdy+=coeff*grady1[k +Z*(xx+X*j )];
+            }
           }
           gradx2[k+Z*(i+X*j)]=Mdx;
           grady2[k+Z*(i+X*j)]=Mdy;
@@ -515,19 +532,20 @@ grads ll_angle3( image3_double in,
             {
               Mgx+=coeff*gradx2[k +Z*(xx+X*j)];
               Mgy+=coeff*grady2[k +Z*(i +X*yy )];
-              Mgz+=coeff*gradz2[zz+Z*(i +X*j )];
+              if (Z>1) Mgz+=coeff*gradz2[zz+Z*(i +X*j )];
             }
             if(h>0)
             {
               Mdx+=coeff*gradx2[k +Z*(xx+X*j)];
               Mdy+=coeff*grady2[k +Z*(i +X*yy )];
-              Mdz+=coeff*gradz2[zz+Z*(i +X*j )];
+              if (Z>1) Mdz+=coeff*gradz2[zz+Z*(i +X*j )];
             }
           }
           //SWAP AX AND AY per LSD ordering 
           ay=(double)log(Mdx/Mgx);
           ax=(double)log(Mdy/Mgy);
-          az=(double)log(Mdz/Mgz);
+          if (Z>1) az=(double)log(Mdz/Mgz);
+          else az=0;
           adr = (unsigned int)  k+Z*(j*X+i);
           an= (double)sqrt(ax*ax + ay*ay + az*az); 
           an2= (double)sqrt(ax*ax + ay*ay); 
@@ -672,6 +690,33 @@ int isaligned( int x, int y, image_double angles, double theta,
 }
 
 /*----------------------------------------------------------------------------*/
+/** Is point (x,y) aligned to angle theta, up to precision 'prec'?
+ */
+int isalignedORTH( int x, int y, image_double angles, double theta,
+                      double prec )
+{
+  double a;
+
+  /* check parameters */
+  if( angles == NULL || angles->data == NULL )
+    error("isaligned: invalid image 'angles'.");
+  if( x < 0 || y < 0 || x >= (int) angles->xsize || y >= (int) angles->ysize )
+    error("isaligned: (x,y) out of the image.");
+  if( prec < 0.0 ) error("isaligned: 'prec' must be positive.");
+  
+  double par1 = theta+0;
+  if (par1>M_PI) par1-=M_PI;
+  double par2 = theta-M_PI;
+  if (par2<(-1.*M_PI)) par2+=M_PI;
+  return (isaligned(x,y,angles,par1,prec)||isaligned(x,y,angles,par2,prec));
+}
+
+
+
+
+
+
+/*----------------------------------------------------------------------------*/
 /** Is point (x,y,z) aligned to angle theta, up to precision 'prec', in polar coords?
   * Uses unit inner product with compact trig identities to reduce cost.  
   * Checks for azimuth alignment, which must be less than or equal to total precision, 
@@ -691,19 +736,29 @@ int isaligned3(double grads_az,double grads_el,double theta_az,double theta_el,d
   
   /*Inner product, measuring parallel alignment*/
   double diff = sGel*sTel*cos(grads_az-theta_az) + cGel*cTel;
-  
-  /*Confirm azimuth alignment*/
-  theta_az -= grads_az;
-  if( theta_az < 0.0 ) theta_az = -theta_az;
-  if( theta_az > M_3_2_PI )
-  {
-    theta_az -= M_2__PI;
-    if( theta_az < 0.0 ) theta_az = -theta_az;
-  }
-  if(theta_az <= prec) return fabs(diff)>=cos(prec);
-  else return 0;
-  
+  return fabs(diff)>=cos(prec);
 }
+
+/*----------------------------------------------------------------------------*/
+/** Is point (x,y,z) aligned to angle theta, up to precision 'prec', in polar coords?
+  * If so, return sign of inner product of alignment, for parallel/anti-parallel analysis
+  */
+int isaligned3_sign(double grads_az,double grads_el,double theta_az,double theta_el,double prec)
+{
+  if( prec < 0.0 ) error("isaligned3: 'prec' must be positive.");
+  if( grads_az == NOTDEF ) return FALSE;
+  if( grads_el == NOTDEF ) return FALSE;  
+
+  double sGel,sTel,cGel,cTel;
+  sincos(grads_el,&sGel,&cGel);
+  sincos(theta_el,&sTel,&cTel);
+  
+  /*Inner product, measuring parallel alignment*/
+  double diff = sGel*sTel*cos(grads_az-theta_az) + cGel*cTel;
+  return diff>=0;
+}
+
+
 /*----------------------------------------------------------------------------*/
 /** Is point (x,y,z) aligned to angle theta, up to precision 'prec', in polar coords?
   * Uses unit inner product with compact trig identities to reduce cost.  
@@ -726,4 +781,17 @@ int isaligned3ORTH(double grads_az,double grads_el,double theta_az,double theta_
   double diff = sGel*sTel*cos(grads_az-theta_az) + cGel*cTel;
   // azimithal alignment unrequired for othogonality measure
   return (1.-fabs(diff))>=cos(prec);
+}
+
+
+/*----------------------------------------------------------------------------*/
+/** Switch orientation to antiparallel orientation 
+  */
+void align3(double * az,double *  el)
+
+{
+  (*az) -= M_PI;
+  (*el) -= M_PI/2.;
+  if ((*az) <= -M_PI) (*az) += M_PI*2.;
+  if ((*el) < 0) (*el) += M_PI;
 }

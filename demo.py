@@ -214,7 +214,7 @@ if __name__=="__main__":
         #LSD settings 
         a = 1.0  #Gradient-by-Ratio parameter 
         t = 1.0  #Division factor for angular tolerance
-        d = 0.05 #Density threshold 
+        d = 0.2 #Density threshold 
         scale=1. #Gaussian downsampling volume ratio 
         sigma=.6 #Gaussian downsampling deviation factor
         e=0      #NFA epsilon parameter
