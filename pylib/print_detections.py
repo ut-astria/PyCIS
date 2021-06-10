@@ -13,7 +13,7 @@ PyCIS - Python Computational Inference from Structure
 Benjamin Feuge-Miller: benjamin.g.miller@utexas.edu
 The University of Texas at Austin, 
 Oden Institute Computational Astronautical Sciences and Technologies (CAST) group
-*Date of Modification: April 30, 2021
+*Date of Modification: June 02, 2021
 
 **NOTICE: For copyright and licensing, see 'notices' at bottom of README
 '''
@@ -74,7 +74,8 @@ def interp_frame(locline,z):
     if (z<z2) and (z1!=z2):
         x2 = int(myinterp(z,z1,z2,x1,x2))          
         y2 = int(myinterp(z,z1,z2,y1,y2))
-    return x1,y1,x2,y2
+    #convert to float required for scaling process, will be cast back to int
+    return float(x1),float(y1),float(x2),float(y2)
 
 def print_detections(img,goodlines=[],badlines=[],folder='',savename='temp',args=None,makeimg=1,makevid=1,vs=0.25):
     '''    Generate video    '''

@@ -1,6 +1,5 @@
 TODO: 
     High-Priority:
-        * astrometry.net plate solving after edge detections
         * update regions3.c/regions3_growORTH() to solve linearity constraint, 
             using non-linear region growing using transformed line priors
         * detect_outliers.py/detect_outliers() update pca/gmm solution to be 
@@ -9,13 +8,20 @@ TODO:
     Medium-Priority
         * sliding window with overlap given large data for import_fits,
             to prevent memory crashing
-        * ASTRIA-Net pipeline integration 
+        * create "estimate noise" function to test detection performance under improved markov kernels
+        * ASTRIA-Net pipeline integration (json output)
         * differentiate spatial and temporal markov kernels,
             medium-priority due to similarity of results when tested
     Low-Priority
         * for acceleration when not involving loops to compute markov kernels,
             compute gradient matrices only once and share across LSD3M
     
+    
+------------------------------------------------------------------
+
+06/07/2021
+    *astrometry.net plate solving introduced to end of PyCIS for updating FITS files
+        * setup.sh, pylib/run_astrometry.py, pylib/import_fits.py
 
 ------------------------------------------------------------------
 

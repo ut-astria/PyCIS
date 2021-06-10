@@ -4,4 +4,4 @@ imageio
 imageio-ffmpeg
 opencv-python
 scikit-learn
-astropy
+astropy==4.2

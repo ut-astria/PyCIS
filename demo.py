@@ -13,7 +13,7 @@ PyCIS - Python Computational Inference from Structure
 Benjamin Feuge-Miller: benjamin.g.miller@utexas.edu
 The University of Texas at Austin, 
 Oden Institute Computational Astronautical Sciences and Technologies (CAST) group
-*Date of Modification: April 30, 2021
+*Date of Modification: June 07, 2021
 
 **NOTICE: For copyright and licensing, see 'notices' at bottom of README
 '''
@@ -25,9 +25,10 @@ import os
 import time
 import numpy as np
 # Import other python functions 
-from pylib.import_fits import import_fits
+from pylib.import_fits import import_fits, mod_fits
 from pylib.detect_outliers import detect_outliers
 from pylib.print_detections import print_detections
+from pylib.run_astrometry import run_astrometry
 
 def get_size(I):
     '''    Get matrix size variables with necesary 0-setting    '''
@@ -203,7 +204,7 @@ if __name__=="__main__":
         
         #import data and reshape as needed
         input_dir = '%s/%s'%(satfolder,satname)
-        I3 = import_fits(input_dir, savedata=0, subsample=1, 
+        I3, headers = import_fits(input_dir, savedata=0, subsample=1, 
             framerange=framerange, scale=scale)
         #I3 = np.load('%s/%s.npy'%(satfolder,satname))
         I3 = np.ascontiguousarray(np.array(I3.transpose(1,2,0)))
@@ -274,8 +275,15 @@ if __name__=="__main__":
         ## CONSTRUCT VIDEO DATA OUTPUT
         print_detections(np.copy(I3),goodlines,badlines,folder=outfolder,savename=name)
 
-        ## PRINT IMAGE FROM LAST FRAME 
-
+        ## RUN ASTROMETRY AND UPDATE HEADERS
+        headersnew = run_astrometry(goodlines, badlines, headers, folder=outfolder,savename=name):
+        newfits = 'new%s/%s'%(satfolder,satname)
+        if not os.path.exists('new%s'%satfolder):
+            os.makedirs('new%s'%satfolder)
+        if not os.path.exists(newfits):
+            os.makedirs(newfits)
+        mod_fits(input_dir, headersnew, folder=newfits,
+            subsample=1, framerange=framerange)
 
     ## PLOT TIMING DATA 
     avgtime = (time.time()-starttime)/1. #numtests

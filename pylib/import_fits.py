@@ -26,10 +26,41 @@ from astropy.io import fits
 #from scipy.ndimage import gaussian_filter
 #import sep
 
+def mod_fits(input_dir, headers, folder='', subsample=1, framerange=[-1,-1]):
+    '''    Update fits files with solved FITS headers    '''
+    #specify pathing
+    datatype='fit'
+
+    #gather file names 
+    imlist =  sorted(glob.glob('%s/*.%s'%(input_dir,datatype)))
+    listlen = len(imlist)
+
+    #filter input frame range for subsample
+    firstframe = max(framerange[0],0)
+    lastframe = min(framerange[1],listlen)
+    if lastframe==-1:
+        lastframe=listlen
+
+    #Update
+    print('UPDATING DATA...')
+    print('Updating %d of %d ...'%(lastframe-firstframe,listlen))
+    if not os.path.exists('%s/'folder):
+        os.makedirs(folder)
+    for imnum, infits in enumerate(imlist):
+        #optional reduced frame subsampling
+        if (subsample==1) and (imnum<firstframe or imnum>lastframe):
+            continue
+        #open frame
+        if len(headers)>(imnum-firstframe):
+            print(outfits)
+            hdr = headers[imnum-firstframe]
+            fits.writeto(outfits,data,hdr,overwrite=True, output_verify="ignore")
+
 
 def import_fits(input_dir, savedata=0, subsample=1, framerange=[-1,-1], scale = 1, printheader=0):
     '''
     Import fits files and either save or pass to main function 
+    Returns images as a 3D numpy array and a list of FITS headers
     '''
     #specify pathing
     datatype='fit'
@@ -44,6 +75,7 @@ def import_fits(input_dir, savedata=0, subsample=1, framerange=[-1,-1], scale = 
     if lastframe==-1:
         lastframe=listlen
     frames = []
+    headers = []
 
     #Run video maker
     headerflag=0
@@ -56,14 +88,17 @@ def import_fits(input_dir, savedata=0, subsample=1, framerange=[-1,-1], scale = 
         #open frame
         with fits.open(infits) as hdul:
             #print header and import data
+            hdr = hdul[0].header
+            headers.append(hdr)
             if printheader==1 and headerflag==0:
                 headerflag=1
-                for entry in hdul[0].header:
-                    print(entry,data[entry],data.comments[entry])
-                #print(hdul.info())
+                for entry in hdr:
+                    print(entry,hdr[entry],hdr.comments[entry])
+                #print(hdr.info())
 
             print('%d'%(imnum-firstframe),end=', ',flush=True)
             subs = hdul[0].data
+            
 
             #format data for pycis
             subs = subs.astype(np.float64)
@@ -91,7 +126,7 @@ def import_fits(input_dir, savedata=0, subsample=1, framerange=[-1,-1], scale = 
         print('Image data successfully saved!\n\n')
     else:
         print('\nReturning image...')
-        return frames
+        return frames, headers
 
 
 

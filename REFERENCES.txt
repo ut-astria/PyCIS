@@ -31,7 +31,7 @@ Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, 2
 Myaskouvskey, Artiom & Gousseau, Yann & Lindenbaum, Michael. (2013). Beyond Independence: An Extension of the 
 A Contrario Decision Procedure. International Journal of Computer Vision. 101. 10.1007/s11263-012-0543-6. 
 
-F. Dellinger, J. Delon, Y. Gousseau, J. Michel, F. Tupin, SAR-SIFT: a SIFT-Like al- gorithm for SAR images, 
+F. Dellinger, J. Delon, Y. Gousseau, J. Michel, F. Tupin, SAR-SIFT: a SIFT-Like algorithm for SAR images, 
 IEEE Trans. Geosci. Remote Sens. 53 (2015) 453–466, doi: 10.1109/TGRS.2014.2323552 .
 
 Jose Lezama, Rafael Grompone von Gioi, Gregory Randall, Jean-Michel Morel. (2014). Finding Vanishing Points via 
@@ -80,3 +80,12 @@ K. Bowyer , C. Kranenburg , S. Dougherty , Edge detector evaluation using empir-
 
 S. Dougherty , K.W. Bozyer , C. Kranenburg , ROC Curves evaluation of edge de- tector performance, in: 
 Proceedings 1998 International Conference on Image Processing, vol. 2, 1998, pp. 525–529 .
+
+Lang, D., Hogg, D.W., Mierle, K., Blanton, M., & Roweis, S., 2010, 
+Astrometry.net: Blind astrometric calibration of arbitrary astronomical images, The Astronomical Journal 139, 1782--1800.
+
+The Astropy Collaboration, Robitaille, T.P., Tollerud, E.J., et. al, 2013, Astropy: A community Python package for astronomy,
+Astronomy and Astrophysics,  558 A33 (2013) DOI: 10.1051/0004-6361/201322068
+
+The Astropy Collaboration, Price-Whelan, A.M., Sipocz, B.M., et. al, 2018, The Astropy Project: Building an inclusive, open-science 
+project and status of the v2.0 core package, The Astronomical Journal, 156, 3, DOI: 10.1051/0004-6361/201322068

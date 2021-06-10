@@ -13,7 +13,7 @@ PyCIS - Python Computational Inference from Structure
 Benjamin Feuge-Miller: benjamin.g.miller@utexas.edu
 The University of Texas at Austin, 
 Oden Institute Computational Astronautical Sciences and Technologies (CAST) group
-*Date of Modification: April 30, 2021
+*Date of Modification: June 07, 2021
 
 **NOTICE: For copyright and licensing, see 'notices' at bottom of README
 '''
@@ -180,7 +180,13 @@ def format_lines(lines,a=10,aa=4906, filt=0):
 
 def detect_outliers(img,lines=[],folder='',savename='temp',args=None):
     '''
-    Pipeline for NFA outlier detection 
+    Pipeline for NFA outlier detection using PCA/GMM 
+    Input: 
+        Image: 3D data cube of image data
+        Lines: [x1,y1,z1,x2,y2,z2,width1,width2,precision,centerline nfa]
+    Output:
+        Goodlines.npy: 2nd order meaninful lines [x1,y1,z1,x2,y2,z2,width1,width2,precision,centerline nfa]
+        Badlines.npy:  1st order meaninful lines [x1,y1,z1,x2,y2,z2,width1,width2,precision,centerline nfa]
     '''
 
 

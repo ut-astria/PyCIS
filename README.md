@@ -12,7 +12,7 @@
 Benjamin Feuge-Miller: benjamin.g.miller@utexas.edu
 The University of Texas at Austin, 
 Oden Institute Computational Astronautical Sciences and Technologies (CAST) group
-*Date of Modification: April 30, 2021*
+*Date of Modification: June 07, 2021*
 
 **NOTICE**: For copyright and licensing, see 'notices' at bottom of readme
 
@@ -38,6 +38,7 @@ the exclusion principle, in order to accuratly measure single-frame events.
 This second-order analysis accounts for spurious structures in noise
 (e.g. star motion, telescope noise) which have a large number of detectable features 
 and hence should be rejected under the paradigm.  
+After detection, we use the "Astrometry.net" software to determine right ascention / declination tracks and update the file header 
 See 'Operation' and 'Demo Visual Observation' sections below.
 
 
@@ -80,14 +81,22 @@ The demo will:
     3. perform first-order gestalt detection of center-lines with edge prior
 3. perform second-order gestalt detection (using pylib/detect_outliers)
 4. print results to results/. 
+5. perform astrometry (using pylib/run_astrometry) and update FITS headers (using pylib/import_fits)
 
 The second-order-meaningful lines correspond to detection of a 
 Starlink satellite made using ASTRIANet telescope resources 
 through UT CAST [see citations in DATASET section below]. 
 
 * Input: data/...
-    * yyymmdd_norad_satname/x.fit - a folder with raw fits frames [see citations in DATASET section below] 
+    * yyymmdd_norad_satname/*.fit - a folder with raw fits frames [see citations in DATASET section below] 
 * Output: results/...
+    * ../newdata/yyymmdd_norad_satname/*.fit - updated fits frames with detection results in headers, with new header keys: 
+        * NUM_PY - number of detections, differentiated as "#" from 0 to NUM_PY in following 
+        * RA_PY_# - right ascension in FK5 refernce frame (hours)
+        * DEC_PY_# - declination in FK5 refernce frame (degrees)
+        * ARA_PY_# - apparent right ascension in TEME refernce frame (hours)
+        * DEC_PY_# - apparent declination in FK5 refernce frame (degrees)
+        * NFA_PY_# - NFA value of detected centerline 
     * data1_name.npy - edge line detections
     * data2_name.npy - center line detections
     * goodlines_name.npy - 2nd-order meaningful detections
@@ -110,6 +119,9 @@ Some low-SNR star streaks are lost on individual-frame detections,
 likely due to building the markov probability kernels from the image itself.
 Using a star-free image prior may enhance detection of dim stars.
 Minor inaccuracies in the object centerline are due to linearity constraints, to be relaxed in favor of non-linear centerline curves in the future.  
+
+Current astrometry processes yeild a ~2-6 arcsecond discrepancy with the TLE-predicted positions, corresponding to a ~1-4 pixel discrepancy (1.76de/4906px FOV for 1.5arcsec/pixel resolution).  
+This is relative to TLE predictions, and so comparison with other detection/tracking systems is yet required. 
 
 Note: This video is generated at 25% scale for github rendering.
 
@@ -152,8 +164,8 @@ URL: http://www.tacc.utexas.edu
 ## TOC:
 
 * demo.py -           run demo as discussed above
-* pycis_demo.job -   slurm call to run_demo for TACC
-* pycis.c -          main python extension module 
+* pycis_demo.job -    slurm call to run_demo for TACC
+* pycis.c -           main python extension module 
 * run_demo.sh -       activate env and launch demo
 * setup.py -          link python-c extension module
 * setup.sh -          install gsl/pyenv/Makefile, link
@@ -174,8 +186,9 @@ URL: http://www.tacc.utexas.edu
 
 * PYLIB:
     * detect_outliers -   detect 2nd-order meaningful lines, given many spurious detections 
-    * import_fits -       import fits time-series data into data cubes
+    * import_fits -       import fits time-series data into data cubes, and update fits headers
     * print_detections -  construct video/image output with detection plots
+    * run_astrometry -    perform plate solving using astrometry.net and construct new headers 
 
 ------------------------------------------------------------------
 
@@ -216,6 +229,10 @@ URL: http://www.tacc.utexas.edu
 * ROC curve analysis:
     * P-value method towards ROC curves [Maumet_2016]
     * ROC Curves [Bowyer_1999] [Dougherty_1998]
+
+* Astrometry: 
+    * Astrometry.net plate solveer [Lang_2010]
+    * Astropy reference frame and fits handling [Astropy_2010, Astropy_2018]
  
 ------------------------------------------------------------------
 
