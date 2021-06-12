@@ -235,12 +235,12 @@ def null_hdr(hdrin):
 
 def cleanup(folder):
   ''' remove temp files'''
-  imlistwcs = glob.glob('%s/*.wcs'%(input_dir,datatype))
-  imlistaxy = glob.glob('%s/*.axy'%(input_dir,datatype))
-  imlistcorr = glob.glob('%s/*.corr'%(input_dir,datatype))
-  imlistmatch = glob.glob('%s/*.match'%(input_dir,datatype))
-  imlistrdls = glob.glob('%s/*.rdls'%(input_dir,datatype))
-  imlistsolved = glob.glob('%s/*.solved'%(input_dir,datatype))
+  imlistwcs = glob.glob('%s/*.wcs'%(folder))
+  imlistaxy = glob.glob('%s/*.axy'%(folder))
+  imlistcorr = glob.glob('%s/*.corr'%(folder))
+  imlistmatch = glob.glob('%s/*.match'%(folder))
+  imlistrdls = glob.glob('%s/*.rdls'%(folder))
+  imlistsolved = glob.glob('%s/*.solved'%(folder))
   for im in imlistwcs:
     os.remove(im) 
   for im in imlistaxy:
@@ -336,7 +336,7 @@ def run_astrometry(goodlines, badlines, headers, folder='temp',savename='temp'):
             dec = convDD(hdr['DEC_PY%d'%i])*np.pi/180.
             err = np.arccos(np.cos(dec)*np.cos(dec0)+np.sin(dec)*np.sin(dec0)*np.cos(ra-ra0))
             print('Post : (',hdr['RA_PY%d'%i],', ',hdr['DEC_PY%d'%i],'), err: ',convDMS(err))
-  cleanup()
+  cleanup(folder)
   print('SUCCESSFUL ASTROMETRY ON %d/%d (%.0f)'%(track,len(headersnew),track/len(headersnew)*100.))
 
   return headersnew
