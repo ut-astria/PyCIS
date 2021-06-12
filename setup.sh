@@ -116,14 +116,14 @@ if [ ! -d "./astrometry" ]; then
         for ssb in {00..11}; do
             ssb=$(printf "%02d" ${ssa})
             wget -r -nd -np -P ${CWD}/astrometry/data "data.astrometry.net/4200/index-${ss}-${ssb}.fits" 
+        done
     done
     #Get small-sized index files (2-11 arcmin diameter skymarks)
     #for ss in {4200..4204}; do
     #    for ssa in {00..47}; do
     #        ssb=$(printf "%02d" ${ssa})
     #        wget -r -nd -np -P ${CWD}/astrometry/data "data.astrometry.net/4200/index-${ss}-${ssb}.fits" 
-    #done
-   
+    #done  
 fi
 export PATH=$PATH:./astrometry/bin
 

@@ -272,13 +272,15 @@ def run_astrometry(goodlines, badlines, headers, folder='temp',savename='temp'):
   headersnew = []
   for z in range(len(headers)):
     print('Solving frame ',z)
-    if (len(badlines)==0) or (len(goodlines)==0):
-      headersnew.append(null_hdr(hdr))
-      continue
 
     starname='%s/%s_star%d'%(folder,savename,z)
     objname='%s/%s_obj%d'%(folder,savename,z)
     hdr = headers[z]
+
+    
+    if (len(badlines)==0) or (len(goodlines)==0):
+      headersnew.append(null_hdr(hdr))
+      continue
 
     #create star list
     starlist = []

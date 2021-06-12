@@ -44,15 +44,17 @@ def mod_fits(input_dir, headers, folder='', subsample=1, framerange=[-1,-1]):
     #Update
     print('UPDATING DATA...')
     print('Updating %d of %d ...'%(lastframe-firstframe,listlen))
-    if not os.path.exists('%s/'folder):
+    if not os.path.exists('%s/'%folder):
         os.makedirs(folder)
     for imnum, infits in enumerate(imlist):
         #optional reduced frame subsampling
         if (subsample==1) and (imnum<firstframe or imnum>lastframe):
             continue
         #open frame
-        if len(headers)>(imnum-firstframe):
-            print(outfits)
+        if len(headers)>(imnum-firstframe):        
+            outfits='%s/%s'%(folder, infits.split("/")[-1])
+            #print(outfits)
+            data, hdrold = fits.getdata(infits, header=True)
             hdr = headers[imnum-firstframe]
             fits.writeto(outfits,data,hdr,overwrite=True, output_verify="ignore")
 

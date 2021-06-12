@@ -276,7 +276,7 @@ if __name__=="__main__":
         print_detections(np.copy(I3),goodlines,badlines,folder=outfolder,savename=name)
 
         ## RUN ASTROMETRY AND UPDATE HEADERS
-        headersnew = run_astrometry(goodlines, badlines, headers, folder=outfolder,savename=name):
+        headersnew = run_astrometry(goodlines, badlines, headers, folder=outfolder,savename=name)
         newfits = 'new%s/%s'%(satfolder,satname)
         if not os.path.exists('new%s'%satfolder):
             os.makedirs('new%s'%satfolder)
