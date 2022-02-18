@@ -1,283 +1,178 @@
-# PyCIS - Python Computational Inference from Structure
+# PyCIS : Python Computational Inference from Structure
 
-   A-contrario inference of object trajectories from structure-in-noise, 
-   building on Line Segment Detection (LSD) for dense electro-optical time-series data
-   formatted as 3D data cubes, with markov kernel estimation for non-independent noise models.
-   LSD C-extension module equipped with multi-layer a-contrario inference for center-line features
-   from spatio-temporal gradient information.  Python modules provided for inference of feature classifications
-   using second-order gestalts, and ingesting/plotting of FITS-format data files.
 
-   This software is under active development.
+    An a-contrario detection algorithm for space object tracking from optical time-series telescope data. 
+
 
 Benjamin Feuge-Miller: benjamin.g.miller@utexas.edu
 The University of Texas at Austin, 
 Oden Institute Computational Astronautical Sciences and Technologies (CAST) group
-*Date of Modification: June 07, 2021*
+*Date of Modification: February 16, 2022*
 
-**NOTICE**: For copyright and licensing, see 'notices' at bottom of readme
+**NOTICE**: For copyright and licensing, see bottom of readme
 
 ------------------------------------------------------------------
 
 ## OVERVIEW:
 
-Under the so-called "a-contrario" paradigm, structures in data are considered "meaningful"
-if they are unlikely to occur by chance according to a background noise model.  
-This "Helmholtz Principle" is formalized by a "Number of False Alarms" (or NFA) function, 
-probabilistically computing the likelihood of a structure's existence given 
-both a noise model assumption and some measurement function.
-We are interested in detecting moving features in noisy video data, organized as a 
-three-dimensional data cube, under which the object is a linear feature.  
-Building on existing line-segment-detection algorithms for dense 2D images, 
-we use the NFA framework to measure edge surface features in the video data
-given no prior information, perform a second round of NFA analysis to detect 
-center line features using the new prior edge information, and finally perform 
-second-order a-contrario analysis for outlier detection.
-The edge and centerline detection steps first perform spatial detection on each individual frame, 
-and then continue with temporal detections with a cubic 3D gradient kernel, accounting for
-the exclusion principle, in order to accuratly measure single-frame events.  
-This second-order analysis accounts for spurious structures in noise
-(e.g. star motion, telescope noise) which have a large number of detectable features 
-and hence should be rejected under the paradigm.  
-After detection, we use the "Astrometry.net" software to determine right ascention / declination tracks and update the file header 
-See 'Operation' and 'Demo Visual Observation' sections below.
+This software aims to enhance traditional techniques for space object detection by mitigating processing requirements such as background subtraction, directly leveraging temporal information, and avoiding contrast-depentent measurements. The method does not require training data, and may be used to propagate uncertainty from data aquisition to the orbit determination processes.  This software can be used on either sidereal or rate-tracked data as potential ASOs have anomalous behavior relative to the starfield and background noise in either context.  This detection method is not designed for photometric analysis.
+
+
+Under the *a-contrario* paradigm, structures in data are considered "meaningful" if they are unlikely to occur by chance.  In contrast to standard p-significance hypothesis testing, the *a-contrario* approach controls the number of detections in expectation within the data rather than by controling a probability of detection. PyCIS uses a recursive sequence of *a-contrario* steps to detect potential ASOs without making any high-fidelity *a-priori* model of predicted objects or the complicated noise structures (atmospheric, hardware, or stellar noise).  The algorithm first finds trajectories of objects surprising in the general atmospheric/sensor noise, and then infers structures of star and hardware behaviors.  The final detection is the set of features which cannot be attributed to any other noise infered from the data.  
+
+
+Astrometric positioning from the detected class of star features is provided by the offline Astrometry.Net software.  This enables output of time-tagged right asension/ declination Tracking Data Messeges of the line-of-sight vector from raw optical data for further processing.
+
+
+A formal report on this software and preliminary performance results is pending.  
 
 
 ------------------------------------------------------------------
 
 ## OPERATION:
 
-Bash scripts are provided which will 
-1. launch prerequisite software installation of GSL 
-2. create and/or activate python3 environment "./env"
-3. compile the C library given in "./lib"
-4. link the C library with gsl as a python extension module
-5. run the demo script "demo.py"
-
-To launch the scripts, run the following appropriate commands:
-
 **Setup**:
    If scripts cannot be read, run:
-   `<dos2unix pycis_demo.job setup.sh run_demo.sh>`
-   If on TACC, load the following: 
-   `<module load gcc/9.1; module load python3/3.8.2>`
-   And launch the installation:
-   `<. setup.sh>`
+   `<dos2unix *.sh>`
+   Finally, install prerequisites and build the software by running:
+   `<. setup.sh>`.
+    The software installation should take under 20 minutes but may require 1-2hrs to gather the astrometric star catalog. 
+   After installing the star catalog, size is 2.7G, 1.4G for Astrometry.net 
 
-**Prepare data**:
-   `<cd data; bash unzip_data.sh; cd ..>`
+**Data Download**:
+    Run `<. getdata.sh>` to  automatically download full time-series ASTRIANet data from the link below.
+    This will take about 5 minutes and install 5GB of analysis data, bringing total memory usage to 7.7GB.
+
+  Feuge-Miller, Benjamin; Kucharski, Daniel; Iyer, Shiva; Jah, Moriba, 2021, "ASTRIANet Data for: Python Computational Inference from Structure (PyCIS)", https://doi.org/10.18738/T8/GV0ASD, Texas Data Repository, V3  
 
 **Demo**:
-   For TACC systems:
-   `<sbatch pycis_demo.job>`
-   For all other systems:
-   `<. run_demo.sh>`
-   and ensure 'framerange' and 'scale' are reduced on demo.py, to prevent memory crash.
+    After setup and data download, run (for both local and TACC machines):
+   `<. rundemo.sh>`
+   The demo will reset paths using setup as necessary.  
 
-The demo will:
-1. read a subset of fits files from data/ (using pylib/import_fits). 
-2. performs line segment detection (LSD) through pycis.c 
-    1. detect parallel and orthogonal markov kernels 
-    2. perform first-order gestalt detection of edge-lines
-    3. perform first-order gestalt detection of center-lines with edge prior
-3. perform second-order gestalt detection (using pylib/detect_outliers)
-4. print results to results/. 
-5. perform astrometry (using pylib/run_astrometry) and update FITS headers (using pylib/import_fits)
+**Troubleshooting**: 
+    The demo scripts most often fail due to memory restrictions.  Try reducing the 'framerange', 'scale', and 'subprocess' parameters in  `<runpycis.py>` if necessary.
 
-The second-order-meaningful lines correspond to detection of a 
-Starlink satellite made using ASTRIANet telescope resources 
-through UT CAST [see citations in DATASET section below]. 
 
-* Input: data/...
-    * yyymmdd_norad_satname/*.fit - a folder with raw fits frames [see citations in DATASET section below] 
-* Output: results/...
-    * ../newdata/yyymmdd_norad_satname/*.fit - updated fits frames with detection results in headers, with new header keys: 
-        * NUM_PY - number of detections, differentiated as "#" from 0 to NUM_PY in following 
-        * RA_PY_# - right ascension in FK5 refernce frame (hours)
-        * DEC_PY_# - declination in FK5 refernce frame (degrees)
-        * ARA_PY_# - apparent right ascension in TEME refernce frame (hours)
-        * DEC_PY_# - apparent declination in FK5 refernce frame (degrees)
-        * NFA_PY_# - NFA value of detected centerline 
-    * data1_name.npy - edge line detections
-    * data2_name.npy - center line detections
-    * goodlines_name.npy - 2nd-order meaningful detections
-    * badlines_name.npy - 1st-order meaningful only detections
-    * img_name.png - last fit frame data with projected detections (2nd order in red)
-    * vidAll_name.avi/.gif - animated fits data with projected detections (2nd order in red) 
-    * vidObj_name.avi/.gif - animated fits data with only 2nd-order projected detections
-
-Runtime estimates are ~30 min on TACC for an unscaled 26-frame subset (4906x4906px)
-~10min for 0.5 scaling, but pending update of gradient analysis method to provide enough points for outlier detection. 
-Runtime not yet estimated for local machines due to size of full-scale data sets.  
 
 ------------------------------------------------------------------
 
 ## DEMO VISUAL OBSERVATION
+We provide two examples which can be recovered by running `<. getdata.sh>` and `<. rundemo.sh>`.  Below are two GIF-format video visuals showing detections over the optical data frames, made after subtracting the median value of each pixel as a naive dark/bias correction to mitigate obvious sensor noise (e.g. hot pixels) .  We also provide HTML-format interactive plots allowing visualization of the data as a dense data cube.  For the HTML data, we remove very dim pixels to create a pixel point cloud across all frames, where blue-yellow color corresponds to pixel brightness.  The "potential ASO" detections are marked in red, and opacity is varied for visibility.   
 
-![Demo Video](docs/videoAll_20201220_45696_starlink-1422.gif)
+Navstar-48 (Medium Earth Orbit) demo, unbinned raw data using tighter angular tolerance (factor 1/1.3) for 1st-order line detection.  Detections are plotted in red, and include both the actively tracked Navstar in the center of the frame and a serendipitous detection of an Unexpected Orbital Object in the lower right. The low tracking noise for Medium Earth Orbit (and higher orbit) objects enables strong performance.  See ![Interactive Starlink Plot](docs/a0t13m1b1_ASSOC1T80W20O0_e0_inj-1_20201224_26407_navstar-48_FINALVOL.html) for further visualization. 
+![Demo Video](docs/20201224_26407_navstar-48_t13m0b1.gif)
 
-Some low-SNR star streaks are lost on individual-frame detections, 
-likely due to building the markov probability kernels from the image itself.
-Using a star-free image prior may enhance detection of dim stars.
-Minor inaccuracies in the object centerline are due to linearity constraints, to be relaxed in favor of non-linear centerline curves in the future.  
+Starlink-1422 (Low Earth Orbit) demo, using 2-pixel binning.  The 21st-40th frames of the time-series.  The blue and yellow lines are all candidate features in the data including stars and atmospheric/hardware noise, where the colormap indicates the time frame of detection.  The red lines are "potential ASOs".  There is high tracking noise when following a Low Earth Orbit object results in false positives (stars) and false negatives (missing tracks), which we will address in future updates.  See  ![Interactive Starlink Plot](docs/a0t10m1b2_ASSOC1T60W20O0_e0_inj-1_20201220_45696_starlink-1422_FINALVOL.html) for further visualization. 
+![Demo Video](docs/20201220_45696_starlink-1422_t10m1b2.gif)
 
-Current astrometry processes yeild a ~2-6 arcsecond discrepancy with the TLE-predicted positions, corresponding to a ~1-4 pixel discrepancy (1.76de/4906px FOV for 1.5arcsec/pixel resolution).  
-This is relative to TLE predictions, and so comparison with other detection/tracking systems is yet required. 
-
-Note: This video is generated at 25% scale for github rendering.
+Running demo script takes approximatly 15 minutes to process the Starlink example (with 2-pixel binning) and 60 minutes to process the Navstar example (with 1-pixel binning).  This was tested on a single Skylake node of the Stampede2 system of the Texas Advanced Computing Center at the University of Texas at Austin.  
 
 ------------------------------------------------------------------
 
 ## DATASET
 
-The data/20201220_45696_starlink-1422 folder contains
-a sequence of 66 FITS-format data frames collected from the 
-NMSkies telecope of the UTA-ASTRIA ASTRIA-Net telescope network.
-Specifically, the frames are a track of the Starlink-1422 satellite 
-on the night of Dec. 20, 2020.  Relevant observation data can be found 
+The datasets available at the Texas Data Repository link below contains a sequence of 66 FITS-format data frames collected from the 
+New Mexico Skies telecope of the ASTRIANet telescope network, tracking the Starlink-1422 satellite on the night of Dec. 20, 2020. Relevant observation data can be found 
 in the FITS headers, printable by turning on the 'headerflag' variable in 
-import_fits.py.  See citation below.  
+`<import_fits.py>`.  See citations below.  
 
-Feuge-Miller, Benjamin; Kucharski, Daniel; Iyer, Shiva; Esteva, Maria; Jah, Moriba, 2021,
+Feuge-Miller, Benjamin; Kucharski, Daniel; Iyer, Shiva; Jah, Moriba, 2021, 
 "ASTRIANet Data for: Python Computational Inference from Structure (PyCIS)", 
-https://doi.org/10.18738/T8/GV0ASD, Texas Data Repository, V1
+https://doi.org/10.18738/T8/GV0ASD, Texas Data Repository, V3  
 
-Maria Esteva, Weijia Xu, Nevan Simone, Amit Gupta, Moriba Jah. 
-Modeling Data Curation to Scientific Inquiry: 
-A Case Study for Multimodal Data Integration. 
-The ACM/IEEE Joint Conference on Digital Libraries in 2020. 
-June 19-23, Wuhan, China. Doi: https://doi.org/10.1145/3383583.3398539 
+------------------------------------------------------------------
 
-Simone, Nevan; Nagpal, Kartik; Gupta, Amit; Esteva, Maria; Xu, Weijia; Jah, Moriba, 
-2021, "Replication Data for: Transparency and Accountability in Space Domain Awareness: 
-Demonstrating ASTRIAGraph's Capabilities with the United Nations Registry Data", 
-https://doi.org/10.18738/T8/NBWWWZ, Texas Data Repository, V1 
-
-The authors acknowledge the Texas Advanced Computing Center (TACC) 
-at The University of Texas at Austin for providing 
-HPC and database resources that have contributed to the research software, 
-particularly in computing resources for running the software and in 
-storage capacity for hosting ASTRIA-Net data. 
-URL: http://www.tacc.utexas.edu
+## DEPENDENCIES:
+The following will be installed at setup.  See <setup.sh> and <requirements.txt> for more details. 
+ 
+* Before Installing: 
+    * Python 3.8
+    * Cmake
+    * GCC
+* PyCIS-LSD software
+    * Python3 environment and C libraries 
+* Point alignment software
+    * FLANN
+    * 3D ponint alignment detector v1.0 by Alvaro Gomez: http://dx.doi.org/10.5201/ipol.2015.126
+* Astrometry software
+    * CFITSIO
+    * WCSlib
+    * Astrometry.net offline software
 
 ------------------------------------------------------------------
 
 ## TOC:
 
 * demo.py -           run demo as discussed above
-* pycis_demo.job -    slurm call to run_demo for TACC
-* pycis.c -           main python extension module 
-* run_demo.sh -       activate env and launch demo
-* setup.py -          link python-c extension module
-* setup.sh -          install gsl/pyenv/Makefile, link
-
-
-* LIB:
-    * constants -     set up some constants
-    * gaussians -     gaussian down-sampling for antialiasing
-    * gradient -      compute gradient magnitude/orientation, and alignment checks
-    * interface -     pipeline helpers for pycis.c
-    * lsd(2/3/3b) -   main lsd pipelines (spatial, temporal, and unified)
-    * markov -        estimate markov kernels and build transition matrices
-    * misc -          lists, angle functions
-    * NFA -           estimate markov or negative binomial approximation tail probability
-    * rectanges(2/3)- build rectangle objects and iterator to call nfa
-    * regions(2/3) -  build and improve pixel regions for estimating rectangles
-    * tuples -        construction of line tuples and image structures 
+* rundemo.sh -        activate env and launch demo
+* runcron.sh -        template for running rundaily.sh through cron
+* rundaily.sh         template for running PyCIS as a live daily algorithm
+* setup.sh -          install dependencies, including PyCIS-LSD
 
 * PYLIB:
-    * detect_outliers -   detect 2nd-order meaningful lines, given many spurious detections 
-    * import_fits -       import fits time-series data into data cubes, and update fits headers
-    * print_detections -  construct video/image output with detection plots
-    * run_astrometry -    perform plate solving using astrometry.net and construct new headers 
+    * detect_outliers -      detect 2nd-order meaningful lines, given many spurious detections 
+    * detect_outliers_agg -  detect 2nd-order meaningful lines using hierarchical clustering
+    * import_fits -          import fits time-series data into data cubes, and update fits headers
+    * main pipe -            control the main pipleine  
+    * print_detections -     construct video/image output with detection plots
+    * run_astrometry -       perform plate solving using astrometry.net and construct new headers 
+    * run_pycis_lsd -        control pipeline relating to the 1st-order line segment detection from dense data cubes
+
+* PYLSD: 
+    * Built by installing PyCIS-LSD through setup.sh 
+
+**Output Files**:
+Input and output locations and names are specified within the main file, see `<runpycis.py>` for example.
+
+* Input: data/...
+    * yyymmdd_norad_satname/*.fit - a folder with raw fits frames [see citations in DATASET section below].  This input is piped to the PyCIS-LSD module.
+* Output: 
+    * results/...
+        * record_name.json - potential ASO ra/dec measurements of the line-of-sight relative to the sensor - positioning information should be provided in FITS headers.  [TO BE ADDED: name.kvn - format as tracking data message (TDM) according to CCSDS standard]. 
+        * img_name.png - still 2D image with projected detections (potential ASOs printed in red).  The background may be suppressed for viewing. 
+        * VideoAll_name.gif - animation of detections, rejected lines colored by time of appearance and potential ASOs colored red.
+        * VideoObj_name.gif - animation with only the potential ASOs plotted.
+    * results_work/... 
+        * data1_x_y_name.npy - edge line detections, x and y labels for parallelization are absent when merged.  This output is produced by the PyCIS-LSD module.
+        * data2_x_y_name.npy - center line detections, x and y labels for parallelization are absent when merged.  This output is produced by the PyCIS-LSD module.
+        * goodlines_name.npy - 2nd-order meaningful detections (potential ASOs)
+        * badlines_name.npy - 1st-order meaningful only detections (stars, sensor structures, etc)
+        * CLUST{1,2,3,X}, OUTLIER, and REMAIN_name.npy - partitionings of the 2nd-order clustering process, for some plotting functions.  
+    * ../newdata/yyymmdd_norad_satname/*.fit - updated fits frames with detection results in headers, with new header keys: 
+        * NUM_PY - number of detections, differentiated as "#" from 0 to NUM_PY in following 
+        * RA_PY_# - right ascension in FK5 refernce frame (hours)
+        * DEC_PY_# - declination in FK5 refernce frame (degrees)
+        * NFA_PY_# - NFA value of detected centerline 
 
 ------------------------------------------------------------------
 
 ## REFERENCES 
 (see REFERENCES.txt for full citations)
 
-* Data resources:
-    * ASTRIANet [Feuge-Miller_2021]
-    * ASTRIA-Graph [Esteva_2020, Simone_2021]
-
-* Background NFA formulations:
-    * Meaningful Alignments [Desolneux_2000] [Desolneux_2008] [Desolneux_2016]
-
-* Initial LSD algorithm:
-    * Initial LSD code: [vonGioi_2012]
-    * Adaption of LSD for non-independent hypothesis and robust gradients: [Liu_2019]
-    * Source for non-independence hypothesis [Almazan_2017] [Myaskouvskey_2013]
-    * Source for robust gradient-by-ratio [Dellinger_2015]
-
-* Centerline detection modifications (rectangles(2/3).c, lsd(2,3).c)
-    * 2nd-order gestalts and the two-run NFA [Lezama_2014] [Simon_2018]
-    * Improved geometric-series rectangle improvement [Lezama_2015]
-
-* Other relevant attempts towards a 3D solution: 
-    * Trajectory method towards 3D alg: [Dimiccoli_2016]
-    * Point cloud method towards 3D alg: [Gomez_2017]
-    * Binomial framing of outlier problem: [Moisan_2016] [Zair_2015]
-
-* Outlier detection of 2nd-order gestalt (detect_outliers.py)
-    * Single-outlier detection, NFA as p-values [Grosjean_2008]
-    * Mahanalobis GMM binomial outlier with chi2 model [Rousseau_2008]
-    * Mahalanobis fisher model (see detect_outliers.py) [Roizman_2020]
-    * Weighted z-test [Zaykin_2011]
-
-* NFA approximation (nfa.c):  
-    * Markov binomial approximation  [Xia_2010]
-
-* ROC curve analysis:
-    * P-value method towards ROC curves [Maumet_2016]
-    * ROC Curves [Bowyer_1999] [Dougherty_1998]
-
-* Astrometry: 
-    * Astrometry.net plate solveer [Lang_2010]
-    * Astropy reference frame and fits handling [Astropy_2010, Astropy_2018]
+* ASTRIANet data resources: [Feuge-Miller_2021]
+* Background NFA formulations: [Desolneux_2000] [Desolneux_2008] [Desolneux_2016]
+* Initial LSD algorithm: See the PyCIS-LSD repo
  
 ------------------------------------------------------------------
 
-## NOTICES:
+## NOTICE:
+ 
+PyCIS: An a-contrario detection algorithm for space object tracking from optical time-series telescope data. 
+Copyright (C) 2022, Benjamin G. Feuge-Miller, <benjamin.g.miller@utexas.edu>
 
-Notice for PyCIS: see pycis.c for more details 
-
-**NOTICE**: 
-This program is modified from the source code of LSDSAR:
-"LSDSAR, a Markovian a contrario framework for line segment detection in SAR images"
-by Chenguang Liu, Rémy Abergel, Yann Gousseau and Florence Tupin. 
-(Pattern Recognition, 2019).
-https://doi.org/10.1016/j.patcog.2019.107034
-*Date of Modification: April 30, 2021*
-
-Original copyright notice from LSDSAR:
-
-**NOTICE**: 
-This code is modified from the source code of LSD:
-"LSD: a Line Segment Detector" by Rafael Grompone von Gioi,
-Jeremie Jakubowicz, Jean-Michel Morel, and Gregory Randall,
-Image Processing On Line, 2012. DOI:10.5201/ipol.2012.gjmr-lsd
-http://dx.doi.org/10.5201/ipol.2012.gjmr-lsd
-*Date of Modification: 27/06/2018*
-
-PyCIS License Notice:
-
-**NOTICE**: 
-This program is released under GNU Affero General Public License
-and any conditions added under section 7 in the link:
-https://www.gnu.org/licenses/agpl-3.0.en.html
-
-Copyright (c) 2021 Benjamin Feuge-Miller <benjamin.g.miller@utexas.edu>
-
-This program is free software: you can redistribute it and/or modify 
- it under the terms of the GNU General Public License as published 
- by the Free Software Foundation, either version 3 of the License, 
- or (at your option) any later version.
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
 
 This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-  GNU Affero General Public License for more details.
- 
-You should have received a copy of the GNU Affero General Public License
-  along with this program. If not, see <http://www.gnu.org/licenses/>.
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
 ------------------------------------------------------------------

@@ -1,7 +1,13 @@
 numpy
 scipy
+pandas
+matplotlib
+opencv-python
 imageio
 imageio-ffmpeg
-opencv-python
 scikit-learn
-astropy==4.2
+astropy==4.1
+sep
+skyfield
+plotly==5.4.0
+ccsds_ndm
