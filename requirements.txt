@@ -11,3 +11,4 @@ sep
 skyfield
 plotly==5.4.0
 ccsds_ndm
+xsdata[cli,lxml,soap]

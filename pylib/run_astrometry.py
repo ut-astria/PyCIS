@@ -5,13 +5,12 @@ pylib/run_astrometry.py: Generate right ascension - declination solution.
   Optionally defines error relative to an expected TLE track (under development).
 
 TODO:
-  Format output to CCSDS Tracking Data Message (TDM) format. 
   Use CAST-local astrometry solution software in place of Astrometry.net offline pipline 
 
 Benjamin Feuge-Miller: benjamin.g.miller@utexas.edu
 The University of Texas at Austin, 
 Oden Institute Computational Astronautical Sciences and Technologies (CAST) group
-Date of Modification: February 16, 2022
+Date of Modification: May 5, 2022
 
 --------------------------------------------------------------------
 PyCIS: An a-contrario detection algorithm for space object tracking from optical time-series telescope data. 
@@ -36,36 +35,45 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 import os
 import json
 import glob
-import subprocess
-import numpy as np
-from pylib.import_fits import import_fits
-from pylib.print_detections import interp_frame, interp_frame_xy, make_kernel
-from pylib.detect_outliers import detect_outliers
 from datetime import datetime
+import time
+from time import sleep
+
+import subprocess
+from multiprocessing import get_context
+
+import numpy as np
+from skimage.feature import match_template 
+from astropy.convolution import Gaussian2DKernel
+import imageio
+
 from astropy import _erfa as erfa
 #import erfa
-from astropy.utils.data import clear_download_cache
 from astropy.utils import iers
 from astropy.utils.iers import conf, LeapSeconds
 from astropy.io import fits
 from astropy.table import Table
 import astropy.units as u
 from astropy.time import Time, TimeDelta
-from astropy.coordinates import SkyCoord, EarthLocation
-from astropy.coordinates import TEME, ICRS, ITRS, GCRS, FK5, CIRS, AltAz
-from astropy.coordinates import CartesianDifferential,CartesianRepresentation
-from multiprocessing import Pool, cpu_count,get_context,set_start_method
-from scipy.ndimage import convolve,maximum_filter, gaussian_filter
-import cv2
-import imageio
-from time import sleep
+from astropy.coordinates import SkyCoord, EarthLocation, TEME, GCRS, CartesianDifferential,CartesianRepresentation
 
-import skyfield.sgp4lib as sgp4lib
-from sgp4.api import Satrec
-from sgp4.api import SGP4_ERRORS
+from sgp4.api import Satrec, SGP4_ERRORS
 import sep
-import pandas as pd
+
+from ccsds_ndm.models.ndmxml2.ndmxml_2_0_0_master_2_0 import Tdm as TDMMaster
+from ccsds_ndm.ndm_io import NdmIo, NDMFileFormats
+from ccsds_ndm.models.ndmxml2 import ndmxml_2_0_0_tdm_2_0 as tdmcore
+from ccsds_ndm.models.ndmxml2 import ndmxml_2_0_0_common_2_0 as commoncore
+from ccsds_ndm.models.ndmxml2.ndmxml_2_0_0_common_2_0 import AngleType #, AngleUnits
+from decimal import Decimal 
+
+from pylib.import_fits import import_fits
+from pylib.print_detections import interp_frame_xy, make_kernel, print_detections_window_postastro
+from pylib.detect_outliers_agg import remove_matches_block
+
+
 def fill_data_leg(array,order,robust=False):
+    '''Interpolate missing data, for kernel design '''
     n = len(array)
     idx = np.arange(n).astype(float)
     mask = ~np.isnan(array)
@@ -76,17 +84,9 @@ def fill_data_leg(array,order,robust=False):
         diff = np.diff(array2)
         array2 = array2[:-1]
         idx2 = idx2[:-1]
-        #mask =~(np.abs(diff-np.mean(diff)) > np.std(diff))
         diff = np.abs(diff)
-        print('input')
-        print(array)
-        print('filter')
-        print(array2)
-        print('filter diff')
-        print(diff)
         diff = (diff - np.mean(diff))/np.std(diff)
         mask = ~(diff > np.quantile(diff,0.75))
-        #mask =~(np.abs(diff-np.mean(diff)) > np.std(diff))
         array2 = array2[mask]
         idx2 = idx2[mask]
     n2 = len(array2)
@@ -94,19 +94,25 @@ def fill_data_leg(array,order,robust=False):
     idx = 2.*idx/n - 1.
     idx2 = 2.*idx2/n - 1.
 
-
     if robust:
         weight = np.ones(n2)
         #empirical fixing by weighting proportional to length
         weight[0] = weight[0]*(float(n2)**2.)
         weight[-1] = weight[-1]*(float(n2)**2.)
-        coeff = np.polynomial.legendre.legfit(idx2,array2,int(order),w=weight)
+        if order>3:
+            coeff = np.polynomial.legendre.legfit(idx2,array2,int(order),w=weight)
+        else:
+            coeff = np.polynomial.polynomial.polyfit(idx2,array2,int(order),w=weight)
     else:
-        coeff = np.polynomial.legendre.legfit(idx2,array2,int(order))
-
-    xfit =  np.polynomial.legendre.legval(idx,coeff)
+        if order>3:
+            coeff = np.polynomial.legendre.legfit(idx2,array2,int(order))
+        else:
+            coeff = np.polynomial.polynomial.polyfit(idx2,array2,int(order))
+    if order>3:
+        xfit =  np.polynomial.legendre.legval(idx,coeff)
+    else:
+        xfit =  np.polynomial.polynomial.polyval(idx,coeff)
     return xfit
-
 
 def load_astropy():
   ''' load iers/erfa updates for parallelization '''
@@ -184,14 +190,39 @@ def convDD(x):
     DD = float(D) + float(M)/60. + float(S)/3600.
     return DD 
 
-def make_xyls(ptslist, hdr, name, obj=0,img=[],imgloc="",frame_zero=-1,
-  z=0, shape=[0,0],imscale=1,binfactor=1,importcorr=0,kernel=[]):
+def make_xyls(ptslist, hdr, name, img=[],imgloc="",frame_zero=-1,
+  z=0, shape=[0,0],imscale=1,binfactor=1,importcorr=0,kernel=[],idxlist=[],streaklist=[],starkernel=None,asowid=2):
 
   ''' 
   Save xyls table of point data.
-  As temporary handling of linearity constraint, 
-  group obj detections within a given tolerance weighed by NFA.
-  HARDCODED MANUAL GROUND TRUTH LABEL
+  As temporary handling of linearity constraint, the local region around a point will be sought for a point matching a kernel,
+  gaussian with std=sqrt(asowid) for 'unstreaked' objects, or a star-like kernel oriented with the streak for untracked objects.
+  For stars where astrometry failed, a star detection can also be used for a slower but more reliable means of calibration. 
+
+  Input:
+    ptslist: [xyz] coordinates of objects of interest at z
+    hdr: the header for frame z
+    name: the filename to save the table
+    img: the image frame, pre-loaded
+    imgloc: the location of image frames to load
+    frame_zero: OBSOLETE
+    z: the frame of interest 
+    shape: The x/y dimensions of the image data
+    imscale: The scaling factor for data import
+    binfactor: The binning factor for data import
+    importcorr: OBSOLTETE: a flag used during debug
+    kernel: kernel for star detection, provided when wanting source-extracted stars for calibration
+    idxlist: a list associating ptslist entries with a given ASO track
+    streaklist: a list associating ptslist with a streaked or unstreaked behavior
+    starkernel: the star kernel provided for enhancing object detection (namely gaussian object kernel enhancement)
+    asowid: the width for a guaussian object detection kernel
+
+  Output:
+    [name].xyls: A astropy table with columns 'X', 'Y', 'NFA', 'IDX', 'XCAL', 'YCAL'
+      'NFA' is the source brightness or nfa for sorting detections in astrometric calibration
+      'XCAL' and 'YCAL' are the a-contrario detection coordinates while 'X','Y' are the source extraction coordinates
+    [name]_cal.xyls: Isolates the calibration data above as 'X', 'Y', 'NFA', 'IDX' for separate calibration
+  
   '''
   #ensure dimension
   if (ptslist.ndim==1):
@@ -199,156 +230,202 @@ def make_xyls(ptslist, hdr, name, obj=0,img=[],imgloc="",frame_zero=-1,
   lcount = len(ptslist)
   data = Table()
   
-  #for objects, we apply a correction due to the linearity constraint, 
-  #averaging detections which occur within some tolerance
-  if (obj==1) and (lcount>1):
-    #try:
-    #  tol = hdr['XVISSIZE']*.01 #pixel tolerance
-    #except:
-    #  tol = hdr['NAXIS1']*.01 #pixel tolerance
-    tol = min(shape)*.01;
-    inclist=[]
-    ptstemp2 = []
-    for i in range(lcount):
-      if i not in inclist:
-        ptstemp1 = []
-        ptstemp1.append(ptslist[i])
-        inclist.append(i)
-        for j in range(i,lcount):
-          if (i<j) and (j not in inclist):
-            dist=((ptslist[i,0]-ptslist[j,0])**2.+(ptslist[i,1]-ptslist[j,1])**2.)**.5
-            if dist<tol:
-              ptstemp1.append(ptslist[j])
-              inclist.append(j)
 
-        #take mean of nearby data and add to list
-        ptstemp1 = np.array(ptstemp1)
-        if (ptstemp1.ndim==1):
-          np.expand_dims(ptstemp1,axis=0)
-        #weighted mean according to nfa
-        weights = ptstemp1[:,2] / sum(ptstemp1[:,2])
-        ptstemp1 = np.sum(ptstemp1*np.expand_dims(weights,axis=1),axis=0)
-        ptstemp2.append(ptstemp1)
-
-    ptstemp2=np.array(ptstemp2)
-    if (ptstemp2.ndim==1):
-      np.expand_dims(ptstemp2,axis=0)
-
-    #create data table
-    data['X'] = ptstemp2[:,0] 
-    data['Y'] = ptstemp2[:,1]
-    data['NFA'] = ptstemp2[:,2]
-
+  #If no image or imgfiles presented, just save the input data (initial star detection)
+  if (len(img)==0) and (not imgloc):
+    #Record input data
+    data['X'] = ptslist[:,0] 
+    data['Y'] = ptslist[:,1]
+    data['XCAL'] = data['X']
+    data['YCAL'] = data['Y']
+    data['NFA'] = ptslist[:,2]
+    data['IDX'] = idxlist if len(idxlist)==len(ptslist) else np.zeros((len(ptslist),))
+    data['STREAK'] = np.asarray([streaki is not None for streaki in streaklist]).astype(dtype=int)  if len(streaklist)==len(ptslist) else np.zeros((len(ptslist),))
+    pass
   else:
-    #otherwise use provided data OR estimate from image  
-    if (len(img)==0) and (not imgloc):
-        data['X'] = ptslist[:,0] 
-        data['Y'] = ptslist[:,1]
-        data['NFA'] = ptslist[:,2]
-        #data['OBJ'] = ptslist[:,3]
-        pass
-    else:#maximize 
-        datatmp=[]
-        #Solver uses basic source extraction 
-        #should resort to this if star aliasing is too severe 
-        importlist=[]
-        if imgloc:
-            if importcorr==1 or importcorr==0 or importcorr==-1:
-                frame_z = int(frame_zero+z+importcorr)
-                print('importing frame ',frame_z)
-                img, _ = import_fits(imgloc, savedata=0, subsample=1,
-                    framerange=[frame_z,frame_z], scale=imscale,binfactor=binfactor)
-                sub = img.squeeze()
-            elif importcorr==3:
-                for importcorrloc in [-1,0,1]:
-                    frame_z = int(frame_zero+z+importcorr)
-                    print('importing frame ',frame_z)
-                    img, _ = import_fits(imgloc, savedata=0, subsample=1,
-                        framerange=[frame_z,frame_z], scale=imscale,binfactor=binfactor)
-                    importlist.append(img.squeeze())
+    #Solver uses basic source extraction 
+    #should resort to this if star aliasing is too severe 
+    importlist=[]
 
-            else:
-                frame_z = int(frame_zero+z)
-                print('importing frame ',frame_z)
-                img, _ = import_fits(imgloc, savedata=0, subsample=1,
-                    framerange=[frame_z,frame_z], scale=imscale,binfactor=binfactor)
-                sub = img.squeeze()
+    #Import the data files 
+    if imgloc:
+      #NOTE: ONLY IMPORTCORR=0 IS USED CURRENTLY 
+      if importcorr==1 or importcorr==0 or importcorr==-1:
+          frame_z = int(frame_zero+z+importcorr)
+          img, _ = import_fits(imgloc, savedata=0, subsample=1,
+              framerange=[frame_z,frame_z], scale=imscale,binfactor=binfactor)
+          sub = img.squeeze()
+      else:
+          frame_z = int(frame_zero+z)
+          img, _ = import_fits(imgloc, savedata=0, subsample=1,
+              framerange=[frame_z,frame_z], scale=imscale,binfactor=binfactor)
+          sub = img.squeeze()
+    else:
+        sub = np.copy(img[:,:,int(z)].squeeze())
+
+    CORRECT=[0,0]
+    sub_orig = np.copy(sub)
+    #If kernel is not provided, this indicates a single object we wish to extract for each pt in ptslist
+    #if kernel is provided, we wish to detect all stars 
+    if len(kernel)==0:
+      objtemp=[]
+      #NOTE: MUST PRESEVE SUB
+      #Iterate over all object points
+      for pt in range(len(ptslist)):
+
+        #Get the local data around the a-contrario detection 
+        #Assumption: Use 5% width as local search area (0.25% area ), may reduce later but balances runtime, valid kernel size, and tracking noise
+        sub = np.copy(sub_orig)
+        xloc = np.mean(np.array(ptslist[pt,0]))
+        yloc = np.mean(np.array(ptslist[pt,1]))
+        #Streaki is None for tracked objects (or slow moving) and a kernel parameterization for streaked detections
+        streaki = streaklist[pt]
+        rad = 0.05*min(sub.shape[0],sub.shape[1]) #if (streaki is not None) else 0.01*min(sub.shape[0],sub.shape[1])
+        xa = int(max(0,xloc-rad))
+        xb = int(min(sub.shape[0],xloc+rad))
+        ya = int(max(0,yloc-rad))
+        yb = int(min(sub.shape[1],yloc+rad))
+        #The source extractor SEP algorithm desires an inverse convention 
+        subshapein = np.copy(sub).shape
+        sub = sub[ya:yb,xa:xb]
+        CORRECT=[ya,xa]
+        NDETECT = 10
+        thresh=1
+
+        ## Process object detection
+        ##GET KERNEL MATCHING DATA
+        #match the template using NORMALIZED CROSS-CORRELATION, (PEARSON CORRELATION COEFFICIENT)
+        #rho_XY = E[ (X-muX) (Y-muY) ] / (sigX sigY) ; X is the image and Y is the kernel template, integrated over the kernel area over each pixel
+        if streaki is not None:
+          #If using a 'streaked' or 'untracked/poorly tracked' object with a long feature, consider a star-like kernel oriented with object track
+          kernel = make_kernel(streaki[0],streaki[1],streaki[2])#,subtract=True)
+          subG = match_template(np.copy(sub),kernel,pad_input=True,mode = 'reflect')
         else:
-            sub = np.copy(img[:,:,int(z)].squeeze())
-        if not importlist:
-            print('',flush=True)
-            if len(kernel)==0:
-                sub = gaussian_filter(sub,sigma=2)
-                bkg= sep.Background(sub)
-                sub -= bkg
-                objs = sep.extract(sub,3, err = bkg.globalrms)
-            else:
-                #sub = gaussian_filter(sub,sigma=2)
-                #objs = sep.extract(sub,3.0, err = bkg.globalrms, filter_kernel=kernel, filter_type='conv')
+          #If the object is "unstreaked / well-tracked", use a gaussian kernel and avoid star detections
+          kernel = np.asarray(Gaussian2DKernel(np.sqrt(asowid))) 
+          subG = match_template(np.copy(sub),kernel,pad_input=True,mode = 'reflect')
+          try:
+            if starkernel is not None:
+              subH = match_template(np.copy(sub),starkernel,pad_input=True,mode = 'reflect')
+              subH[subH<0] = 0 #only bother removing positive correlations 
+              subG = subG - subH
+          except Exception as e:
+            print(e)
+            print('sub_img shape',sub.shape); print('kernel shape',kernel.shape); 
+            print('input shape',subshapein); print('coordinates',[[ya,yb],[xa,xb]])
+            quit()
 
-                #subtract before convolve - need to ensure we dont explode
-                #bkg= sep.Background(sub) #recompute background and resolve
-                #sub -= bkg
-                #sub = sub-np.amin(sub)
-                #convolve and resubtract
-                sub = convolve(sub,kernel)
-                bkg= sep.Background(sub) #recompute background and resolve
-                sub -= bkg
-                sub = sub-np.amin(sub)
-                print('submin ',np.amin(sub))
+        #Print data if desired 
+        if False:
+          saveimg = np.copy(subG)
+          saveimg = saveimg-np.amin(saveimg)
+          saveimg = np.ceil(saveimg*(254./np.amax(saveimg))).astype(np.uint8)
+          savek = idxlist[pt] if len(idxlist)==len(ptslist) else 0
+          imageio.imwrite('%sCONVOLVEk%d.png'%(name,savek),saveimg)
+        #Prepare image for SEP
+        subG = np.ascontiguousarray(subG)
+        bkg= sep.Background(subG)  
+        subG -= bkg
+        #select a standard deviation which results in a single detection 
+        threshstep = 1.
+        #Must adapt due to possible 'streaks' at location 
+        while not NDETECT==1:
+            while NDETECT>1:
+                thresh=thresh+threshstep
+                objs = sep.extract(subG,thresh, err = bkg.globalrms)
+                NDETECT=len(objs)
+            while NDETECT<1:
+                thresh=thresh-threshstep
+                objs = sep.extract(subG,thresh, err = bkg.globalrms)
+                NDETECT=len(objs)
+            threshstep/=2.
+            if threshstep<1e-3:
+                print('WARNING: CANNOT GET ONE SOURCE EXTRACTION ON %d'%frame_z)
+                objtemp.append([-1,-1,-1,-1,-1])
+                continue
+        #Save the detection data for this point
+        objtemp.append([objs['x'][0]+CORRECT[1], objs['y'][0]+CORRECT[0], objs['peak'][0],xloc,yloc])
+      #Gather all point detections
+      objtemp = np.vstack(objtemp) #allows for unexpected sizing 
 
-                savemean = np.mean(sub)
-                savestd = bkg.globalrms
-                teststd = 3.0
-                sizethresh = 0.005 #5 percent max
-                testimg = sub-savemean #no abs, seek only bright
-                sizetest =  float(np.count_nonzero( testimg > (teststd*savestd)  )) / float(sub.size)
-                print('thresh %d yeilds %.3f, compare to %.3f'%(int(teststd),sizetest,sizethresh),flush=True)
-                while sizetest > sizethresh:
-                    teststd=teststd+1.0
-                    sizetest =  float(np.count_nonzero( testimg > (teststd*savestd)  )) / float(sub.size)
-                    print('thresh %d yeilds %.3f, compare to %.3f'%(int(teststd),sizetest,sizethresh),flush=True)
-
-
-                #objs = sep.extract(sub,teststd, err = bkg.globalrms, filter_kernel=kernel, filter_type='matched')
-
-                objs = sep.extract(sub,teststd, err = bkg.globalrms)
-                #print('saveing img %s.png'%name)
-                #saveimg = np.ceil(sub*(254./np.amax(sub))).astype(np.uint8)
-                #print('submax ',np.amax(saveimg))
-                #imageio.imwrite('%s.png'%name,saveimg)
-
-
-        ptstemp = np.empty((len(objs),3))
-        for i in range(len(objs)):
-
-            ptstemp[i,0] = objs['x'][i] 
-            ptstemp[i,1] = objs['y'][i]
-            ptstemp[i,2] = objs['peak'][i]
-              
-        data['X'] = ptstemp[:,0] 
-        data['Y'] = ptstemp[:,1]
-        data['NFA'] = ptstemp[:,2]
-        #filtering for admissibility - currently unimplemented
-        tempfilt = np.copy(np.asarray(data['X'][:]))>0
+    else:
+      ##STAR DETECTION 
+      
+      #Get template match 
+      insub = np.copy(sub)
+      sub = match_template(np.copy(sub),kernel,pad_input=True,mode = 'reflect')
+      #Print data if desired 
+      if False:
+        saveimg = np.copy(sub)
+        saveimg = saveimg-np.amin(saveimg)
+        saveimg = np.ceil(saveimg*(254./np.amax(saveimg))).astype(np.uint8)
+        savek = idxlist[pt] if len(idxlist)==len(ptslist) else 0
+        imageio.imwrite('%sCONVOLVEk%d.png'%(name,0),saveimg)
+      #Prepare image for SEP
+      sub = np.ascontiguousarray(sub)
+      bkg= sep.Background(sub) #recompute background and resolve
+      sub -= bkg
+      #Choose an initial deviation which ensures SEP can run, a very small percentage of the image
+      savemean = np.mean(sub)
+      savestd = bkg.globalrms
+      teststd = 3.0
+      sizethresh = 0.001 #5 percent max
+      testimg = sub-savemean #no abs, seek only bright
+      val = np.quantile(testimg, 1.-sizethresh)
+      teststd = val / savestd
+      #Run SEP on the image      
+      try:
+        objs = sep.extract(sub,teststd, err = bkg.globalrms)
+      except Exception as e:
+        print('z %d cannot solve stars'%z,flush=True)
+        print(e)
         datanew = Table()
-        datanew['NFA']=data['NFA'][tempfilt]
-        datanew['X']=data['X'][tempfilt]
-        datanew['Y']=data['Y'][tempfilt]
-        del data
-        data=datanew
+        datanew['NFA']=[]
+        datanew['X']=[]
+        datanew['Y']=[]
+        datanew['IDX']=[]
+        datanew.write('%s.xyls'%name,overwrite=True,format='fits')
+        datanew.write('%s_cal.xyls'%name,overwrite=True,format='fits')
+        return #abort 
+      #Record data 
+      objtemp = np.empty((len(objs),5))
+      for i in range(len(objs)):
+          objtemp[i,0] = objs['x'][i]#+CORRECT[1] 
+          objtemp[i,1] = objs['y'][i]#+CORRECT[0]
+          objtemp[i,2] = insub[int(objs['x'][i]),int(objs['y'][i])]#objs['peak'][i]
+          objtemp[i,3]=objs['x'][i]; objtemp[i,4]=objs['y'][i]
 
+    #SAVE OUTPUT, RECORDING ORIGINAL A-CONTRARIO DETECTION POINTS FOR POST-PROCESSING
+    ptstemp=objtemp      
+    data['X'] = ptstemp[:,0] 
+    data['Y'] = ptstemp[:,1]
+    data['NFA'] = ptstemp[:,2] #peak value 
+    data['XCAL'] = ptstemp[:,3]
+    data['YCAL'] = ptstemp[:,4]
+    data['IDX'] = idxlist if len(idxlist)==len(ptstemp) else np.zeros((len(ptstemp),))
+    data['STREAK'] = np.asarray([streaki is not None for streaki in streaklist]).astype(dtype=int) if len(streaklist)==len(ptstemp) else np.zeros((len(ptstemp),))
+
+    #filtering of inadmissible points 
+    tempfilt = np.copy(np.asarray(data['X'][:]))>0
+    datanew = Table()
+    datanew['NFA']=data['NFA'][tempfilt]
+    datanew['X']=data['X'][tempfilt]
+    datanew['Y']=data['Y'][tempfilt]
+    datanew['XCAL']=data['XCAL'][tempfilt]
+    datanew['YCAL']=data['YCAL'][tempfilt]
+    datanew['IDX']=data['IDX'][tempfilt]
+    datanew['STREAK']=data['STREAK'][tempfilt]
+    del data
+    data=datanew
   data.write('%s.xyls'%name,overwrite=True,format='fits')
-
-  #Save manual label ('calibration') 
-  #HARDCODED LABEL REQUIRES UPDATE FOR FUTURE TESTS 
+  #A-CONTRARIO DATA
   datacal = Table()
-  datacal['NFA']=[10001,]
-  datacal['Y']=[shape[0]/2]
-  datacal['X']=[shape[1]/2]
+  datacal['NFA']=data['NFA']
+  datacal['X']=data['XCAL']
+  datacal['Y']= data['YCAL']
+  datacal['IDX'] = data['IDX']
   datacal.write('%s_cal.xyls'%name,overwrite=True,format='fits')
-
-
+  
 def solve_field(name,hdr,scale,binfactor):
   ''' 
   solve name.wcs from name.xyls star list 
@@ -363,18 +440,32 @@ def solve_field(name,hdr,scale,binfactor):
   Lscale = 1.7#5
   Hscale = 1.8#77
   RAscale = 15.
+  #print('LHscaleinit: ',[Lscale,Hscale])
   try:
     Lscale = 0.8*hdr['CDELT1']*hdr['NAXIS1'] #deg/pix * pix = FOV
     Hscale = 1.2*hdr['CDELT2']*hdr['NAXIS2']
     RAscale=1.
+    #print('LHscalecdelt1: ',[Lscale,Hscale])
   except: 
     RAscale=15.
   try: #FOV*(current length (unbinned)* length) = newFOV
     L = Lscale*(w*binfactor/hdr['XVISSIZE']) #lower bound of image width, degrees
     H = Hscale*(e*binfactor/hdr['YVISSIZE']) #upper bound of image width, degrees
+    #print('LHxvissize: ',[L,H])
   except:
     L = Lscale*(w*binfactor/hdr['NAXIS1']) #lower bound of image width, degrees
     H = Hscale*(e*binfactor/hdr['NAXIS2']) #upper bound of image width, degrees
+  #L and H provide a range of angular width
+  #w/e provide a sense of pixel width
+  #we can determine arcseconds per pixel
+  #and report to that precision 
+  #how much subpixel precision is up for debate, since XY are inexact... 
+  #leave this for another day 
+    #print('LHnaxis1: ',[L,H])
+  #print('LH: ',[L,H])
+  if L>=H:
+      print('ERROR: SCALE L>=H AT SOLVE-FIELD')
+      quit()
   #Correct pointing info and ensure uniform hours/degrees info
   try:
     ra = convDD(hdr['RA'])*RAscale #prior right ascension, degrees
@@ -393,14 +484,22 @@ def solve_field(name,hdr,scale,binfactor):
       ra = hdr['CMND_RA']*RAscale #prior right ascension, degrees
       dec =hdr['CMND_DEC'] #prior right assension, degrees
   radius = H*2. #2#search radius, degrees
-  #print('w,e,l,h,ra,dec : ',[w,e,L,H,ra,dec])
+ 
   #run solve, permitting error bounds on solve 
   if os.path.exists('%s.solved'%name):
     os.remove('%s.solved'%name)
   passer=0
   tol=1
+  hdulxy = fits.open('%s.xyls'%name)
+  dataxy = hdulxy[1].data
+  hdulxy.close()
+  #xylen = len(dataxy)
+  xylen=100 #DONT NEED ALL POINTS, just those with strongest behavior 
+  #INCREASE TOLERANCE IN ATTEMPTS TO SOLVE PLATE 
   while passer==0: #no-remove-lines
-    solve_command = "solve-field --no-plots  --no-verify --no-remove-lines --overwrite -E %f  -d 20,50,100 "%(tol)
+    #solve_command = "solve-field --no-plots  --no-verify --no-remove-lines --overwrite -E %f  -d 20,50,100 "%(tol)
+    #solve_command = "solve-field --no-plots  --no-verify --no-remove-lines --overwrite -E %f  -d 100 --parity neg --odds-to-tune-up 1e5 "%(tol)
+    solve_command = "solve-field --no-plots  --no-verify --no-remove-lines --overwrite -E %f  -d %d --parity neg --odds-to-tune-up 1e6 --crpix-center "%(tol,xylen)
     solve_command+= "-X X -Y Y -s NFA -w %d -e %d -u dw -L %f -H %f --ra %f --dec %f --radius %f %s"%(
       w, e, L, H, ra, dec, radius, '%s.xyls'%name)
     #solve_command+= "-X X -Y Y -s NFA -w %d -e %d -u dw -L %f -H %f %s"%(
@@ -408,11 +507,12 @@ def solve_field(name,hdr,scale,binfactor):
     #solve_command+= "-X X -Y Y -s NFA -w %d -e %d -u dw -L %f -H %f %s"%(
     #  w, e, L, H, '%s.xyls'%name)
     solve_result = subprocess.run(solve_command,shell=True,
-      stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL )
+        stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL )
     if solve_result.returncode:
         print(solve_result.returncode)
         print('ERROR: SOLVE-FIELD NOT FOUND, TRY RUNNING SETUP.SH')
         #quit()
+    passer=1
     if os.path.exists('%s.solved'%name):
       passer=1
     else:
@@ -420,7 +520,7 @@ def solve_field(name,hdr,scale,binfactor):
             tol+=1
         else:
             tol*=tol
-        if tol>min(w*.01,20): #at once percent
+        if tol>min(w*.01,10): #at once percent
             passer=1
 
 def convert(starname, objname, hdrin, frame,usetle):
@@ -477,6 +577,13 @@ def convert(starname, objname, hdrin, frame,usetle):
   for i in range(len(datard)):
     xloc = dataxy[i]['X']
     yloc = dataxy[i]['Y']
+    peakloc = dataxy[i]['NFA']
+    iloc = dataxy[i]['IDX']
+    sloc = dataxy[i]['STREAK']
+    xcal = dataxy[i]['XCAL']
+    ycal = dataxy[i]['YCAL']
+
+
     ra =  datard[i].field(0)
     dec=  datard[i].field(1)
     '''
@@ -487,15 +594,18 @@ def convert(starname, objname, hdrin, frame,usetle):
     '''
     c_icrs = SkyCoord(ra=ra*u.degree, dec=dec*u.degree, frame='icrs',
           obstime=obstime,location=location)
-    c_fk5 = c_icrs.transform_to('fk5')
+    c_fk5 = c_icrs#.transform_to('fk5')
     ra_fk5 = c_fk5.ra.value
     dec_fk5 = c_fk5.dec.value
+    ra_fk5 = ra
+    dec_fk5 = dec
     c_teme = c_icrs.transform_to('teme')
     c_teme.representation_type='spherical'
     ra_teme = c_teme.lon.value
     dec_teme = c_teme.lat.value
   
     #IF USING TLE, CONVERT FROM J2000 PROJECTION TO GCRS LOS CORRECTION 
+    usetle==0
     if usetle==1:
         print('applying gcrs transform')
         c_gcrs = c_icrs.transform_to(GCRS(obstime=obstime))
@@ -530,6 +640,10 @@ def convert(starname, objname, hdrin, frame,usetle):
     hdr.set('AD_PY%d'%i, convDMS(dec_teme), 'PyCIS target Dec apparent TEME [deg]' )
     hdr.set('X_PY%d'%i, xloc, 'PyCIS target X-position [pixels of original frame]')
     hdr.set('Y_PY%d'%i, yloc, 'PyCIS target Y-position [pixels of original frame]')
+    hdr.set('X0_PY%d'%i, xcal, 'PyCIS cal target X-position [pixels of original frame]')
+    hdr.set('Y0_PY%d'%i, ycal, 'PyCIS cal target Y-position [pixels of original frame]')
+    hdr.set('IDX_PY%d'%i, iloc, 'PyCIS target associated track index')
+    hdr.set('STR_PY%d'%i, sloc, 'PyCIS target associated track boolean streak-like flag')
 
     hdr.set('NFA_PY%d'%i, dataxy[i].field(2), 'PyCIS centerline NFA')
     numrows+=1
@@ -616,25 +730,25 @@ def run_solve(starname,objname,hdr,scale,z,iers_a,binfactor,usetle):
         iers.earth_orientation_table.set(iers_a)
         solve_field(starname, hdr, scale,binfactor)
         if not os.path.exists('%s.solved'%starname):
-            print('z %d failed, continuting'%(z),flush=True)
-            return null_hdr(hdr,usetle), z
+            #print('starsolve z %d failed, continuting'%(z),flush=True)
+            return null_hdr(hdr,usetle), z, False
         else:
-            print('z %d passed, continuting'%(z),flush=True)
+            pass#print('starsolve z %d passed, continuting'%(z),flush=True)
         #solve stars and update header
         #print('pass successful')
         hdrnew = convert(starname, objname, hdr, z, usetle)
     else:
         print('z %d returning XY'%(z),flush=True)
         hdrnew = convertXYONLY(starname, objname, hdr, z, usetle)
-    return hdrnew,z
+    return hdrnew,z, True
 
 
 def build_kernels(hlen,goodlines,badlines,input_dirs):
+  '''Interpolate kernel parameter data if there are missing or poorly-solved elements'''
   maskset = np.nan*np.ones((hlen,3))
   if 1==1:
       for z in range(hlen):
-        print('adding z %d'%z, flush=True)
-        if (len(badlines)==0) or (len(goodlines)==0):
+        if (len(badlines)==0):# or (len(goodlines)==0):
           continue
 
         starlist = []
@@ -642,30 +756,36 @@ def build_kernels(hlen,goodlines,badlines,input_dirs):
         for k in range(len(badlines)):
           locline2 = badlines[k,:].squeeze()
           locline = badlines[k,:6].squeeze()
-          x,y= interp_frame_xy(locline,z,star=0)
+          x,y= interp_frame_xy(locline,z,double=True,star=0)
           if not all(np.array([x,y])==0):
             tempstarlines.append(locline2)
             val = badlines[k,-1]
             starlist.append([x,y,badlines[k,-1],0])
+        if len(starlist)==0:
+            maskset[int(z),:] = [np.nan,np.nan,np.nan]
+            continue
+
         if not input_dirs:
             pass
         else:
-            lines = np.vstack(tempstarlines)
+            if len(starlist)==1:
+                lines = np.asarray(tempstarlines).reshape(1,-1)
+            else:
+                lines = np.vstack(tempstarlines)
             k_len= np.linalg.norm(lines[:,:3]-lines[:,3:6],axis=1)
             el = np.arccos((lines[:,5]-lines[:,2])/k_len)
             az = np.arctan2((lines[:,3]-lines[:,0]) , (lines[:,4]-lines[:,1]))
 
             elmask = (el*180./np.pi) > (90.-22.5)
-            print('considering %d/%d non-ASO lines'%(np.count_nonzero(elmask),len(elmask)))
             if np.count_nonzero(elmask)>1:
                 medlen = np.median(k_len[elmask])
                 kmask = k_len>medlen
                 elmask = np.logical_and(elmask,kmask)
-                print('update: considering %d/%d non-ASO lines'%(np.count_nonzero(elmask),len(elmask)))
                 if np.count_nonzero(elmask)>1:
+                    #az = np.arctan2((lines[:,3]-lines[:,0]) , (lines[:,4]-lines[:,1]))
                     medaz = np.median(az[elmask])
                     medwid = np.median(lines[elmask,6])
-                    print('kernel length, width, az: ',[medlen,medwid,medaz*180./np.pi])
+                    #print('kernel length, width, az: ',[medlen,medwid,medaz*180./np.pi])
                     maskset[int(z),:] = [medlen,medwid,medaz]
   ##INTERPOLATE MASKSET COLUMNS
   maskset[~np.isnan(maskset[:,2]),2] = np.unwrap(maskset[~np.isnan(maskset[:,2]),2],period=np.pi/2)
@@ -681,13 +801,258 @@ def build_kernels(hlen,goodlines,badlines,input_dirs):
   maskset[maskset[:,1]<2.,1] = 2.
   return maskset
 
-def run_astrometry(img,goodlines, badlines, headers, scale=1., folder='temp',savename='temp',
-  makejson=0,tle=[],binfactor=1,imgastro=0,subprocess_count=10,
-   I3loc=[],frames=[],
-  imscale=1.,median=1,shift=0,datatype='fits',kernel=[]):
+
+def convert_json_tdm(data, hdrs, write_path,tol):
+  '''
+  Build CCSDS-format TDMs for each associated Ra/Dec track.
+  Reject those points which are not within 'tol' of the a-contrario solution,
+  and if more than half the points are missed reject as a false-positive a-contrario detection.
+  TODO: This can exist after improved non-linear a-contrario association, but should not be necessary. 
+
+  Input: 
+    data: json-format radec detection from main function 
+    hdrs: headers containing important data
+    write_path: where to save the xls-format TDM
+    tol: the image-frame L2 distance a source extraction point can be from the a-contrario detection when recording 
+
+  Output: 
+    [write_path]_obj[X].xls: The ccsds TDM file for associated track X
+    printdata: [x,y,z,rdt]: the source extraction data for printing, with a 'rdt' boolean flag whether this element is included in rdtdata
+    rdtdata: [right ascension dd:mm:ss.sss, declination dd:mm:ss.sss, time utc] for each printdata element with 'rdt'=True
+    title: A string for printing purposes, including the ASO NORAD ID and hdrs[0] initial Timestamp
+  '''
+  #Instantiate
+  hdr = hdrs[0]
+  tdm = TDMMaster()
+  #Main metadata
+  myheader = tdmcore.TdmHeader()
+  myheader.comment = ["PyCIS TDM Product version 2022-02-23"],
+  myheader.creation_date = datetime.utcnow().isoformat()
+  myheader.originator="UT-ASTRIA"
+  tdm.header = myheader
+  #Get title information of object/time for printing purposes 
+  title_obj = str(hdr["OBJECTID"])
+  try:   
+    obstime=str(Time(hdr['DATE-OBS'],format='isot',scale='utc')+TimeDelta(hdr['EXPOSURE']/2./86400.))
+  except:
+    dayA = hdr['DATE_OBS'].split(" ")[0]
+    dayA = dayA.split("/")    
+    dayB = hdr['TIME-OBS'].split(" ")[0]
+    dayB = dayB.split(":")
+    day = datetime(year=2000+int(float(dayA[2])),month=int(float(dayA[1])),day=int(float(dayA[0])),
+            hour=int(float(dayB[0])),minute=int(float(dayB[1])),second=int(float(dayB[2])) )
+    tdelta =hdr['EXPTIME']#.split(" ")[0]
+    obstime=str(Time(day,format='datetime',scale='utc')+TimeDelta(tdelta/2./86400.))
+  title_time=obstime
+  title = "Detections for ASO %s on %s."%(title_obj,title_time)  
+  title="%s(Measurements in red, a-contrario trajectories in green, purple/yellow colormap of pixel intensity.)"%title
+
+  #Get number of segments 
+  idxmax=0
+  for row in data:
+    #print(row)
+    if row["num_objects"]>0:
+      idx = int(row["index"])
+      idxmax = idx if idx>idxmax else idxmax
+
+
+  printdata=[]
+  rdtdata=[]
+  #FOR EACH ASSOCIATED TRACK:
+  for iloc in range(1,1+idxmax):
+      mybody = tdmcore.TdmBody()
+      mysegmentlist = []
+
+      #Build metadata
+      mysegment = tdmcore.TdmSegment()
+      mymeta = tdmcore.TdmMetadata()
+      mymeta.time_system = commoncore.TimeSystemType('UTC')
+      mymeta.participant_1 = '%s_OBS%d'%(str(hdr["OBJECTID"]),iloc)
+      mymeta.participant_2 = "TRCK1 (Lat: %f, Lon: %f, Alt: %f km)"%(hdr["TELLAT"],hdr["TELLONG"],hdr["TELALT"]/1000.)
+      mymeta.mode = tdmcore.ModeType("SEQUENTIAL")
+      mymeta.path = "1,2"
+      mymeta.angle_type = tdmcore.AngleTypeType('RADEC')
+      mymeta.reference_frame = tdmcore.RefFrameType("EME2000")
+      mysegment.metadata = mymeta
+      mysegmentlist.append(mysegment)
+      mybody.segment = mysegmentlist
+      
+      framelist=[]
+      myobslist = []
+      err=0
+      subdata=[] #XYZ information 
+      subrdt=[]  #Right ascension, declination, time information 
+
+      #Build body data 
+      for row in data:
+        idx = int(row["index"])
+        if idx==iloc and row["num_objects"]>0:
+
+          #Check if source extraction detection is within bounds from a-contrario result 
+          angles = row["object_coords"]
+          framelist.append(row["frame"])
+          sloc=row["streaklike"] 
+          erri = ((row['x']-row['xcal'])**2.+(row['y']-row['ycal'])**2.)**.5
+          err+=erri
+          #print('idx %d frame %d: err: %.2f / %.2f... xy=[%.2f,%.2f], streak %d'%(idx,row["frame"],erri,tol,row['x'],row['y'],sloc))
+          if (sloc==0) and (erri>tol): #this filtering should really only be necessary for the gaussian kernel matching
+            subdata.append([row['x'],row['y'],row['frame'],False])
+            continue
+          subdata.append([row['x'],row['y'],row['frame'],True])
+          #store right ascension as one row, decimal degrees
+          ra = float(angles[0])*180./np.pi
+          myobs = tdmcore.TrackingDataObservationType()
+          myobs.angle_1 = AngleType(Decimal(ra))#, AngleUnits.DEG )
+          myobs.epoch = str(row["time"])
+          myobslist.append(myobs)
+          #store declination as a second row, decimal degrees
+          dec = float(angles[1])*180./np.pi
+          myobs = tdmcore.TrackingDataObservationType()
+          myobs.angle_2 = AngleType(Decimal(dec))#, AngleUnits.DEG )
+          myobs.epoch = str(row["time"])
+          myobslist.append(myobs)
+          subrdt.append([str(convDMS(ra)),str(convDMS(dec)),str(row["time"])])
+
+        #Save body       
+        mydata = tdmcore.TdmData()
+        mydata.observation = myobslist
+        #mybody.segment[iloc-1].data = mydata 
+        mybody.segment[0].data = mydata 
+
+      #Check that at least half the points have passed tolerance in order to save measurements as valid
+      density = float(np.count_nonzero(np.vstack(subdata)[:,3]))/float(len(framelist))
+      err = np.mean(err)#**.5
+      tdm.body = mybody
+      print('OBJECT %d HAS LENGTH %d (%d-%d), DENSITY %.4f, err %.4f'%(iloc,max(framelist)-min(framelist),min(framelist),max(framelist),density,err))
+      density_tol = .5 #how dense should the track be?  If not dense enough, should just reject
+      if density>density_tol:
+        printdata.extend(subdata)
+        rdtdata.extend(subrdt)
+        #Each associated track gets its own CCSDS to interface better with ASTRIAGraph 
+        seg_path = os.path.splitext(write_path)[0]+'_obj%d.xml'%iloc
+        NdmIo().to_file(tdm, NDMFileFormats.XML, seg_path)
+      else:
+        #Data which is not written to TDM should still be recorded for printing purposes
+        for s in subdata:
+          s[3] = False
+        printdata.extend(subdata)
+  return np.vstack(printdata),rdtdata,title
+
+def run_astrometry_sub(zlist, infolder, savename,goodlines,badlines,headers,headersnew,usetle,imgshape,input_dirs,maskset,extrap,
+      jsonname,skipifexist,useimg,imgastro,img,frame_zero,imscale,binfactor,importcorr,cropscale,iers_a):
+  ''' 
+  A helper function for running object detection and astrometry on a given set of 'zlist' frames, 
+  for easily switching between using a-contrario results and cross-correlation results for star calibration 
+  ''' 
+  folder = '%s_work'%infolder
+  iterable=[]
+  ## FOR EACH FRAME OF INTEREST
+  for z in zlist:
+    #Specify the files we will use for storing data
+    kernel=None
+    starname='%s/%s_star%d'%(folder,savename,z)
+    objname='%s/%s_obj%d'%(folder,savename,z)
+    hdr = headers[z]
+    #Make sure there is sufficient star/object data to consider
+    if (len(badlines)==0) or (len(goodlines)==0):
+      print('ERROR: lines empty, check results: badlines %d goodlines %d'%(len(badlines),len(goodlines)))
+      headersnew[z] =null_hdr(hdr,usetle)
+      continue
+
+    #create star list
+    starlist = []
+    tempstarlines=[]
+    for k in range(len(badlines)):
+      locline2 = badlines[k,:].squeeze()
+      locline = badlines[k,:6].squeeze()
+      #x,y= interp_frame_xy(locline,z,star=3)
+      x,y= interp_frame_xy(locline,z,double=True,star=0)
+      if not locline[2]==locline[5]:
+        if (z==locline[2]) or (z==locline[5]):
+          continue 
+      if ((x<=0) | (x>=imgshape[0])) | ((y<=0) | (y>=imgshape[1])):
+        x=0; y=0;
+      if not all(np.array([x,y])==0):
+        tempstarlines.append(locline2)
+        starlist.append([x,y,badlines[k,-1],0])
+
+    #Abort if there are not enough valid stars 
+    if (len(starlist)==0):
+      headersnew[z] =null_hdr(hdr,usetle)
+      print('EMPTY STARLIST frame %d'%z)
+      continue
+    #Build the star kernel for this frame
+    if not imgastro==0:
+        medlen = maskset[int(z),0]
+        medwid = maskset[int(z),1]
+        medaz = maskset[int(z),2]
+        if (not np.isnan(medlen)):
+            kernel = make_kernel(medlen,medwid,medaz)
+
+    #create obj list
+    objlist = []
+    idxlist=[]
+    streaklist=[]
+    #Find all a-contrario detections intersecting this frame, with a flag for extrapolating all lines 
+    for k in range(len(goodlines)):
+      locline = goodlines[k,:6].squeeze()
+      x,y = interp_frame_xy(locline,z,extrap=extrap,shape=imgshape,double=True,printdetail=True)
+      if ((x<0) | (x>imgshape[0])) | ((y<0) | (y>imgshape[1])):
+        x=0; y=0;
+     
+      if not all(np.array([x,y])==0):
+        #Record 1) corrdinates, 2) association index, 3) streak kernel parameters if the object is not likely gaussian PSF
+        objlist.append([x,y,goodlines[k,-1]])
+        idxlist.append(k+1)
+        xylen = ((goodlines[k,0]-goodlines[k,3])**2. + (goodlines[k,1]-goodlines[k,4])**2.)**.5
+        if xylen>(.2*min(imgshape[0],imgshape[1])):
+            slen=  np.mean(maskset[:,0]) #0.01*min(imgshape[0],imgshape[1])
+            swid = np.mean(maskset[:,1]) #goodlines[k,6]/2.
+            saz = np.arctan2((locline[3]-locline[0]) , (locline[4]-locline[1]))
+            streaklist.append([slen,swid,saz])
+        else:
+            streaklist.append(None)
+      
+    #account for no-detection case
+    if (len(starlist)==0) or (len(objlist)==0):
+      #print('EMPTY OBJECT, FRAME %d'%z)
+      headersnew[z] =null_hdr(hdr,usetle)
+      continue
+
+    #IMGASTROSETTINGS
+    #0 - all pycis
+    #1 - source extract stars, pycis asos
+    #2 - all source extract
+    #3 - pycis stars, source extract asos
+    if not(os.path.exists(jsonname) and skipifexist):
+        if usetle==-1 or (useimg==0 and (imgastro==0 or imgastro==3)):
+          make_xyls(np.array(starlist),hdr, starname, z=z, shape=imgshape)#, img=img,z=z)
+        else:
+          if not input_dirs:
+              make_xyls(np.array(starlist),hdr, starname, img=img,z=z, shape=imgshape)
+          else:
+              if 1==0:#imgastro==2:
+                  make_xyls(np.array(starlist),hdr, starname,z=z, shape=imgshape)
+              else:
+                  make_xyls(np.array(starlist),hdr, starname, imgloc=input_dirs[0],frame_zero=frame_zero,z=z, shape=imgshape,imscale=imscale,binfactor=binfactor,importcorr=importcorr,kernel=kernel)
+    if not(os.path.exists(jsonname) and skipifexist):
+        if not (imgastro==2 or imgastro==3):
+            make_xyls(np.array(objlist), hdr, objname, z=z, shape=imgshape,idxlist=idxlist,starkernel=kernel,asowid=np.mean(maskset[:,1]))
+        else:
+            make_xyls(np.array(objlist), hdr, objname, z=z, shape=imgshape,idxlist=idxlist,imgloc=input_dirs[0],frame_zero=frame_zero,imscale=imscale,binfactor=binfactor,importcorr=importcorr,kernel=[],streaklist=streaklist,starkernel=kernel,asowid=np.mean(maskset[:,1]))
+        iterable.append((starname,objname,hdr,cropscale,z,iers_a,binfactor,usetle))
+  return iterable,headersnew
+
+def run_astrometry(img,goodlines, badlines, headers, scale=1., folder='temp',tdmfolder='temp',savename='temp',
+  makejson=0,tle=[],binfactor=1,vs=0.25,imgastro=0,subprocess_count=10,
+  I3loc=[],frames=[],
+  imscale=1.,median=1,shift=0,datatype='fits',kernel=[],imgshape=[0,0,0]):
   '''
   Launch Astrometry.net plate solving, group and convert a-contrario detections, 
   and update headers for updating fits files or JSON output
+  The results of interest are a CCSDS-format Tracking Data Message for each associated track detected, 
+  with a plotly HTML plot including the measured calibrated data and a-contrario trajectory detections.
+
   Input: 
     img -        image data for optional sorting
     goodlines -  line features corresponding to 2nd-order-meaninful detected objects 
@@ -700,12 +1065,32 @@ def run_astrometry(img,goodlines, badlines, headers, scale=1., folder='temp',sav
     tle -        tle to use for PR analysis ([] to use HARDCODED manual label)
     binfactor -  binning factor of image to correct data/header discrepancies
     imgastro -   (0/1) use img to sort stars by intensity rather than centerline-NFA
+
   Output: 
     headersnew - updated headers with detection ra/dec and nfa information
     record_name.json - ra/dec track, and error data for PR analysis
+    *obj[X].xls - CCSDS-Format tracking data message for associated track X
+    *ASTRO*html - a plotLY HTML interactive plot of the measured calibrated data and a-contrario trajectory detections.
+
   '''
+  
+  ## BY DEFAULT, WE WILL ATTEMPT SOURCE EXTRACTION ON THE EXTRAPOLATED A-CONTRARIO DETECTIONS
+  #  USING A FILTER IN CCSDS TDM CONSTRUCTION TO REMOVE NOISY A-CONTRARIO LINES AND INVALID SOURCE EXTRACTION POINTS
+  extrap=True
+  print('IMGSHAPE',imgshape)
+  print(goodlines)
+  print('Filtering lines without azimuth filter.  %d ->'%(len(goodlines)), end=' ')
+  #SOURCE EXTRACTION WILL USE A 5% WIDTH DOMAIN, TDM MEASUREMENT FILTER WILL USE A 1% WIDTH DOMAIN 
+  septol=0.05*min(imgshape[0],imgshape[1])
+  errtol=0.01*min(imgshape[0],imgshape[1])
+  disttol = 0.001*min(imgshape[0],imgshape[1])
+  #ASSOCIATE ALL LINES WHICH INTERSECT WHEN EXTRAPOLATED OVER SEPTOL
+  #handles implementation error in current linearized association 
+  goodlines,_ = remove_matches_block(goodlines, goodlines,len(headers),identical=True,septol=septol,azfilter=False,disttol=disttol)
+  print('%d'%(len(goodlines)))
+
+  #Handling of window-based analysis, TLE flags, astropy data
   cropscale=np.copy(scale)
-  #for importcorr in [-1,0,1]:
   for importcorr in [0,]:
       print('\n\nIMPORTCORR ',importcorr)
       input_dirs=[]
@@ -739,84 +1124,94 @@ def run_astrometry(img,goodlines, badlines, headers, scale=1., folder='temp',sav
       print('USE TLE: ',usetle)
       print('USE IMG (HARDCODE): ',useimg)
 
-  maskset = build_kernels(len(headers),goodlines,badlines,input_dirs)
 
+  #IF JSON EXISTS
+  skipifexist=0
+  jsonname='%s/record_%s.json'%(folder,savename)
+
+  #interpolate kernel data
+  if not imgastro==0:
+      maskset = build_kernels(len(headers),goodlines,badlines,input_dirs)
+
+  printdata=[]
+  #TODO: OBSOLETE: This while loop will run exactly once currently. REmove
   while useimg<=1:
-      for z in range(len(headers)):
-        starname='%s/%s_star%d'%(folder,savename,z)
-        objname='%s/%s_obj%d'%(folder,savename,z)
-        hdr = headers[z]
-        if (len(badlines)==0) or (len(goodlines)==0):
-          print('ERROR: lines empty, check results: badlines %d goodlines %d'%(len(badlines),len(goodlines)))
-          headersnew[z] =null_hdr(hdr,usetle)
-          continue
 
-        #create star list
-        starlist = []
-        tempstarlines=[]
-        for k in range(len(badlines)):
-          locline2 = badlines[k,:].squeeze()
-          locline = badlines[k,:6].squeeze()
-          x,y= interp_frame_xy(locline,z,star=0)
-          if not all(np.array([x,y])==0):
-            tempstarlines.append(locline2)
-            val = badlines[k,-1]
-            starlist.append([x,y,badlines[k,-1],0])
-        if not input_dirs:
-            pass
-        else:
-            lines = np.vstack(tempstarlines)
+    #if True: #not(os.path.exists(jsonname) and skipifexist):
 
-            medlen = maskset[int(z),0]
-            medwid = maskset[int(z),1]
-            medaz = maskset[int(z),2]
-            if (not np.isnan(medlen)):
-                kernel = make_kernel(medlen,medwid,medaz)
+    #Build an iterable for astrometry using the raw a-contrario star detections 
+    subtime=time.time()
+    iterable,headersnew = run_astrometry_sub(range(len(headers)), folder, savename,goodlines,badlines,headers,headersnew,usetle,imgshape,input_dirs,maskset,extrap,
+        jsonname,skipifexist,useimg,imgastro,img,frame_zero,imscale,binfactor,importcorr,cropscale,iers_a)
+    print('FIRST RUN: ITERABLE IS LENGTH: ',len(iterable))
+    subtime-=time.time()
+    subtime/=60.
+    print('Runtime: %.2f'%subtime)
+    subtime=time.time()
+    len_all_detections = len(iterable)
+    #Run the astrometric plate solver 
+    print('LAUNCHING STARMAP')
+    if len(iterable)>0:
+      process_count=min(subprocess_count,len(iterable))
+      chunks = int(len(iterable)/process_count)  
+      with get_context("spawn").Pool(processes=process_count, maxtasksperchild=1) as pool:
+        results=pool.starmap(run_solve,iterable,chunksize=chunks)
+      resolve_list = []
+      for r in results:
+        hdrnew = r[0]
+        z = r[1]
+        passed_solve_field = r[2]
+        if not passed_solve_field:
+          resolve_list.append(z)
+        headersnew[z] = hdrnew  
+      scale = min(imgshape[0], imgshape[1])
+      #Report this initial run 
+      print('STARMAP END',flush=True)
+      subtime-=time.time()
+      subtime/=60.
+      print('Runtime: %.2f'%subtime)
+      subtime=time.time()
+      len_calibrate_detections = np.copy(len(iterable) - len(resolve_list)) #len first pass calibrate
+      print('PASS1: iterable %d, resolve %d, result %d'%(len(iterable), len(resolve_list), len_calibrate_detections))
 
-        #create obj list
-        objlist = []
-        for k in range(len(goodlines)):
-          locline = goodlines[k,:6].squeeze()
-          x,y = interp_frame_xy(locline,z)
-          if not all(np.array([x,y])==0):
-            objlist.append([x,y,goodlines[k,-1]])
-            print('obj',[x,y,z,k+1])
-        #'''
-        #account for no-detection case
-        if (len(starlist)==0) or (len(objlist)==0):
-          headersnew[z] =null_hdr(hdr,usetle)
-          continue
+      #TODO: The followisn should become default behabior 
+      #WHEN STARS WERE PYCIS BEFORE, NOW TRY SOURCE ON REDUCED SET 
+      if imgastro==3:
+        iterlen1 = np.copy(len(iterable) - len(resolve_list)) #len first pass calibrate
+        print('RUNNING SOURCEEXTRACTOR FOR STARSOLVE ON %d/%d TRIALS'%(len(resolve_list),len(iterable)),flush=True)
+        iterable,headersnew = run_astrometry_sub(resolve_list, folder, savename,goodlines,badlines,headers,headersnew,usetle,imgshape,input_dirs,maskset,extrap,
+            jsonname,skipifexist,useimg,2,img,frame_zero,imscale,binfactor,importcorr,cropscale,iers_a)
+        print('SECOND RUN: ITERABLE IS LENGTH: ',len(iterable))
+        subtime-=time.time()
+        subtime/=60.
+        print('Runtime: %.2f'%subtime)
+        subtime=time.time()
+        print('LAUNCHING STARMAP')
+        if len(iterable)>0:
+          process_count=min(subprocess_count,len(iterable))
+          chunks = int(len(iterable)/process_count)  
+          with get_context("spawn").Pool(processes=process_count, maxtasksperchild=1) as pool:
+            results=pool.starmap(run_solve,iterable,chunksize=chunks)
+          resolve_list = []
+          for r in results:
+            hdrnew = r[0]
+            z = r[1]
+            passed_solve_field = r[2]
+            if not passed_solve_field:
+              resolve_list.append(z)
+            headersnew[z] = hdrnew  
+          scale = min(imgshape[0], imgshape[1])
+          subtime-=time.time()
+          subtime/=60.
+          print('Runtime: %.2f'%subtime,flush=True)
+          subtime=time.time()
+          iterlen2 = np.copy(len(iterable) - len(resolve_list)) #len second pass calibrate 
+          len_calibrate_detections = iterlen1+iterlen2
+          print('PASS2: iterable %d, resolve %d, result %d'%(len(iterable), len(resolve_list), iterlen2))
+          print('NET: ',len_calibrate_detections)
 
-        if usetle==-1 or (useimg==0 and imgastro==0):
-          make_xyls(np.array(starlist),hdr, starname, z=z, shape=img.shape)#, img=img,z=z)
-        else:
-          if not input_dirs:
-              make_xyls(np.array(starlist),hdr, starname, img=img,z=z, shape=img.shape)
-          else:
-              #print("SHOULD BE USING IMPORT",flush=True)
-              make_xyls(np.array(starlist),hdr, starname, imgloc=input_dirs[0],frame_zero=frame_zero,z=z, shape=img.shape,imscale=imscale,binfactor=binfactor,importcorr=importcorr,kernel=kernel)
-        #print('DISABLING OBJ INTERPOLATION SINCE WE NOW HAVE ASSOC STEP')
-        #print('OBJS num',len(objlist))
-        #print(objlist)
-        make_xyls(np.array(objlist), hdr, objname, obj=0, z=z, shape=img.shape)
-        iterable.append((starname,objname,hdr,cropscale,z,iers_a,binfactor,usetle))
-      print('ITERABLE IS LENGTH: ',len(iterable))
-      iterlen = len(iterable)
-
-
-      ## RETURN ONLY XY IF REQUESTED
-      if len(iterable)>0:
-        process_count=min(subprocess_count,len(iterable))
-        chunks = int(len(iterable)/process_count)  
-        with get_context("spawn").Pool(processes=process_count, maxtasksperchild=1) as pool:
-          results=pool.starmap(run_solve,iterable,chunksize=chunks)
-        for r in results:
-          hdrnew = r[0]
-          z = r[1]
-          headersnew[z] = hdrnew  
-        jsondata=[]
-        scale = min(img.shape[0], img.shape[1])
-
+      #If only wanting XY results, report now 
+      jsondata=[]
       if usetle==-1:
         for z in range(len(headersnew)):
           hdr = headersnew[z]
@@ -842,8 +1237,7 @@ def run_astrometry(img,goodlines, badlines, headers, scale=1., folder='temp',sav
         cleanup(folder)
         return headersnew
 
-
-      #Print track log
+      #Otherwise, need to format output from the updated headersnew data 
       try:
         Lscale = hdr['CDELT1']
         Hscale = hdr['CDELT2']
@@ -856,9 +1250,15 @@ def run_astrometry(img,goodlines, badlines, headers, scale=1., folder='temp',sav
           hdr['CMND_RA'] = hdr['CMND_RA']/RAscale
       except: 
         RAscale=15.
-
+    
       track = 0
-      jsondata=[]
+      #IF JSON EXISTS
+      #jsonname='%s/record_%s.json'%(folder,savename)
+      if os.path.exists(jsonname) and skipifexist:
+        with open(jsonname) as jsontemp:
+            jsondata = json.load(jsontemp)
+          
+      #Iterate over each header and read in data 
       for z in range(len(headersnew)):
         hdr = headersnew[z]
         knownframes=[]
@@ -876,7 +1276,6 @@ def run_astrometry(img,goodlines, badlines, headers, scale=1., folder='temp',sav
                   except:
                     ra0 = hdr['CMND_RA']*RAscale #prior right ascension, degrees
                     dec0 = hdr['CMND_DEC'] #prior right assension, degrees
-
                 ra0 = convDD(hdr['R0_PY'])*RAscale #prior right ascension, degrees
                 dec0 = convDD(hdr['D0_PY']) #prior right assension, degrees
 
@@ -908,10 +1307,14 @@ def run_astrometry(img,goodlines, badlines, headers, scale=1., folder='temp',sav
 
                 ra = convDD(hdr['RA_PY%d'%i])
                 dec = convDD(hdr['DEC_PY%d'%i])
+                iloc = hdr['IDX_PY%d'%i]
+                sloc = hdr['STR_PY%d'%i]
+
                 skycoord = SkyCoord(ra*u.deg,dec*u.deg,frame='fk5') 
                 ra *= RAscale*np.pi/180.
                 dec *=np.pi/180.
-            
+
+                #This is only relevant is we consider a known TLE...
                 err = np.arccos(np.cos(dec)*np.cos(dec0)+np.sin(dec)*np.sin(dec0)*np.cos(ra-ra0))
                 errformat = convDMS(err*180./np.pi) #this is in rads but need degrees
                 scale=0
@@ -921,35 +1324,62 @@ def run_astrometry(img,goodlines, badlines, headers, scale=1., folder='temp',sav
                     errnew = (err / (dpp * np.pi/180)) /    naxis
                     scale = 1.76
                 except:
-                    
                     errnew = (err / (hdr['CDELT1'] * np.pi/180)) /    (min(hdr['NAXIS1'],hdr['NAXIS2']))
                     scale = min(hdr['NAXIS1'],hdr['NAXIS2'])*hdr['CDELT1']
 
+                #Add entry of detection to json structure , for later TDM conversion 
                 rowdict={
-                  'frame':z, 'num_objects':hdr['NUM_PY'], 
-                  'object_coords': [ra, dec], 'object_err': errnew, 
-                  'scale':scale, 'units':'rads' }
+                  'frame':int(z), 'num_objects':int(hdr['NUM_PY']), 'index':int(iloc), 'streaklike':int(sloc),
+                  'object_coords': [float(ra), float(dec)], 'object_err': float(errnew), 
+                  'scale':float(scale), 'units':'rads', 'time':str(hdr['TIME_PY']),
+                  'x':int(np.ceil(hdr['X_PY%d'%i])), 'y':int(np.ceil(hdr['Y_PY%d'%i])),
+                  'xcal':int(np.ceil(hdr['X0_PY%d'%i])), 'ycal':int(np.ceil(hdr['Y0_PY%d'%i])) }
                 jsondata.append(rowdict)  
+                printdata.append([int(np.ceil(hdr['X_PY%d'%i])),int(np.ceil(hdr['Y_PY%d'%i])),int(z)])
         else:
-            rowdict={
-            'frame':z, 'num_objects':hdr['NUM_PY'], 
-            'object_coords': [], 'object_err': 0, 
-            'scale':0,'units':'rads'
-            }
-            jsondata.append(rowdict)  
-      if makejson==1:
-            jsonname='%s/record_%s.json'%(folder,savename)
-            print('WRITING RECORD TO %s'%jsonname)
-            with open(jsonname,'w') as json_file:
-                json.dump(jsondata,json_file)
+            pass
 
+      ##SAVE JSON DATA 
+      #print(jsondata)
+      #print(json.dumps(jsondata,indent=4))
+      if makejson==1:
+        if not(os.path.exists(jsonname) and skipifexist):
+          jsonname='%s/record_%s.json'%(folder,savename)
+          #jsonname='%s/SE1_record_%s.json'%(folder,savename)
+          print('WRITING RECORD TO %s'%jsonname)
+          with open(jsonname,'w') as json_file:
+              json.dump(jsondata,json_file)
       cleanup(folder)
       #print('SUCCESSFUL ASTROMETRY ON %d/%d (%.0f)'%(track,len(headersnew),track/len(headersnew)*100.))
-      print('SUCCESSFUL ASTROMETRY:')
-      print('\t calibrated detections / all files:      %d/%d (%.0f)'%(track,len(headersnew),track/len(headersnew)*100.))
-      print('\t calibrated detections / all detections: %d/%d (%.0f)'%(track,iterlen,track/iterlen*100.))
-      print('\t        all detections / all files       %d/%d (%.0f)'%(iterlen,len(headersnew),iterlen/len(headersnew)*100.))
 
+
+      if not (os.path.exists(jsonname) and skipifexist):
+          #print('SUCCESSFUL ASTROMETRY:')
+          #print('\t calibrated detections / all files:      %d/%d (%.0f)'%(track,len(headersnew),track/len(headersnew)*100.))
+          #print('\t calibrated detections / all detections: %d/%d (%.0f)'%(track,iterlen,track/iterlen*100.))
+          #print('\t        all detections / all files       %d/%d (%.0f)'%(iterlen,len(headersnew),iterlen/len(headersnew)*100.))
+          track=len_calibrate_detections
+          iterlen=len_all_detections
+          print('SUCCESSFUL ASTROMETRY:')
+          print('\t calibrated detections / all files:      %d/%d (%.0f)'%(track,len(headersnew),track/len(headersnew)*100.))
+          print('\t calibrated detections / all detections: %d/%d (%.0f)'%(track,iterlen,track/iterlen*100.))
+          print('\t        all detections / all files       %d/%d (%.0f)'%(iterlen,len(headersnew),iterlen/len(headersnew)*100.))
+
+      ##CONVERT JSON TO A CCSDS-TDM STRUCTURE AND SAVE PLOTTING DATA
+      #tdmname='%s/record_%s.tdm'%(tdmfolder,savename)
+      #tdmname='%s/record_%s.xml'%(tdmfolder,savename)
+      tdmname='%s/%s.xml'%(tdmfolder,savename)
+      
+
+      printdata,rdtdata,title=convert_json_tdm(jsondata,headersnew,tdmname,tol=errtol)
+
+      #SAVE THE NEW PLOT RESULTS 
+      print_detections_window_postastro(imgshape,printdata,goodlines,folder=folder,savename='ASTRO_%s'%savename,
+        makevid=0,makegif=1,vs=vs,fps=5,amp=1,background=0,
+        ccopt=len(headers), I3loc = I3loc, frames=frames,
+        imscale=imscale, median=median, shift=shift, datatype=datatype,binfactor=binfactor,rdt=rdtdata,title=title,starlines=badlines)
+
+      #TODO: Clean up this end statment, should immediatly end after writing.  Remove while loop and track
       if track>0:
           #print(json.dumps(jsondata,indent=4))
           useimg+=2

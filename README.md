@@ -7,7 +7,7 @@
 Benjamin Feuge-Miller: benjamin.g.miller@utexas.edu
 The University of Texas at Austin, 
 Oden Institute Computational Astronautical Sciences and Technologies (CAST) group
-*Date of Modification: February 16, 2022*
+*Date of Modification: May 19, 2022*
 
 **NOTICE**: For copyright and licensing, see bottom of readme
 
@@ -15,17 +15,39 @@ Oden Institute Computational Astronautical Sciences and Technologies (CAST) grou
 
 ## OVERVIEW:
 
+
+This software takes in a time-series of optical FITS data and produces a CCSDS-formatted Tracking Data Message. This algorithm was initially presented in:
+* B. Feuge-Miller, M. Jah, “A-Contrario Structural Inference for Space Object Detection and Tracking”, *in 8th Annual IAA Space Traffic Management Conference*, Austin, TX, 2022
+
+
 This software aims to enhance traditional techniques for space object detection by mitigating processing requirements such as background subtraction, directly leveraging temporal information, and avoiding contrast-depentent measurements. The method does not require training data, and may be used to propagate uncertainty from data aquisition to the orbit determination processes.  This software can be used on either sidereal or rate-tracked data as potential ASOs have anomalous behavior relative to the starfield and background noise in either context.  This detection method is not designed for photometric analysis.
 
 
 Under the *a-contrario* paradigm, structures in data are considered "meaningful" if they are unlikely to occur by chance.  In contrast to standard p-significance hypothesis testing, the *a-contrario* approach controls the number of detections in expectation within the data rather than by controling a probability of detection. PyCIS uses a recursive sequence of *a-contrario* steps to detect potential ASOs without making any high-fidelity *a-priori* model of predicted objects or the complicated noise structures (atmospheric, hardware, or stellar noise).  The algorithm first finds trajectories of objects surprising in the general atmospheric/sensor noise, and then infers structures of star and hardware behaviors.  The final detection is the set of features which cannot be attributed to any other noise infered from the data.  
 
 
-Astrometric positioning from the detected class of star features is provided by the offline Astrometry.Net software.  This enables output of time-tagged right asension/ declination Tracking Data Messeges of the line-of-sight vector from raw optical data for further processing.
+Astrometric positioning from the detected class of star features is provided by the offline Astrometry.Net software.  This enables output of time-tagged right asension/ declination Tracking Data Messeges of the line-of-sight vector from raw optical data for further processing. In post-processing, we use localized source extraction around the results with inferred kernel matching to improve non-linear tracking capability and assist in false posititive rejection.  
+
+------------------------------------------------------------------
+
+## DEMO VISUAL OBSERVATION
 
 
-A formal report on this software and preliminary performance results is pending.  
+This example can be recovered by running `<. getdata.sh>` and `<. rundemo.sh>`. The "potential ASO" detections are marked in red from post-processing, given the *a-contrario* trajectory detections shown in green. The Navstar-48 (Medium Earth Orbit) GPS satellite is used as an example to demonstrate effectiveness on low-tracking-noise active tracking (MEO-GEO objects) and object discovery.  The actively tracked Navstar is in the center of the frame and an Unexpected Orbital Object is in the lower right. Tracking Data Messages can be found in the `<docs>` folder for both detections. The data and results can be interactively visualized at [Interactive Starlink Plot](https://rawcdn.githack.com/ut-astria/PyCIS/d1c7a943fb445505a5d87da48b07fb0446b5a90a/docs/a0t10m1b2_ASSOC1T60W20O0_e0_inj-1_20201220_45696_starlink-1422_FINALVOL.html) for further visualization. 
 
+![Demo Video](docs/20201224_26407_navstar-48.gif)
+
+Demo script takes approximatly 3hrs (with 1-pixel binning and windows of 20 and 30 frames), for a 93-frame 11-minute observation.  The implementation is not yet optimized, and future speed-up is expected.  This was tested on a single Skylake node of the Stampede2 system of the Texas Advanced Computing Center at the University of Texas at Austin.  
+
+------------------------------------------------------------------
+
+## DATASET
+
+The demo datasets from the New Mexico Skies telecope of the ASTRIANet telescope network are available at the Texas Data Repository: 
+
+Feuge-Miller, Benjamin; Kucharski, Daniel; Iyer, Shiva; Jah, Moriba, 2021, 
+"ASTRIANet Data for: Python Computational Inference from Structure (PyCIS)", 
+https://doi.org/10.18738/T8/GV0ASD, Texas Data Repository, V3  
 
 ------------------------------------------------------------------
 
@@ -52,34 +74,6 @@ A formal report on this software and preliminary performance results is pending.
 
 **Troubleshooting**: 
     The demo scripts most often fail due to memory restrictions.  Try reducing the 'framerange', 'scale', and 'subprocess' parameters in  `<runpycis.py>` if necessary.
-
-
-
-------------------------------------------------------------------
-
-## DEMO VISUAL OBSERVATION
-We provide two examples which can be recovered by running `<. getdata.sh>` and `<. rundemo.sh>`.  Below are two GIF-format video visuals showing detections over the optical data frames, made after subtracting the median value of each pixel as a naive dark/bias correction to mitigate obvious sensor noise (e.g. hot pixels) .  We also provide HTML-format interactive plots allowing visualization of the data as a dense data cube.  For the HTML data, we remove very dim pixels to create a pixel point cloud across all frames, where blue-yellow color corresponds to pixel brightness.  The "potential ASO" detections are marked in red, and opacity is varied for visibility.   
-
-Navstar-48 (Medium Earth Orbit) demo, unbinned raw data using tighter angular tolerance (factor 1/1.3) for 1st-order line detection.  Detections are plotted in red, and include both the actively tracked Navstar in the center of the frame and a serendipitous detection of an Unexpected Orbital Object in the lower right. The low tracking noise for Medium Earth Orbit (and higher orbit) objects enables strong performance.  See [Interactive Starlink Plot](https://rawcdn.githack.com/ut-astria/PyCIS/d1c7a943fb445505a5d87da48b07fb0446b5a90a/docs/a0t10m1b2_ASSOC1T60W20O0_e0_inj-1_20201220_45696_starlink-1422_FINALVOL.html) for further visualization. 
-![Demo Video](docs/videoObj_a0t13m1b1_ASSOC1T80W20O0_e0_inj-1_20201224_26407_navstar-48.gif)
-
-Starlink-1422 (Low Earth Orbit) demo, using 2-pixel binning.  The 21st-40th frames of the time-series.  The blue and yellow lines are all candidate features in the data including stars and atmospheric/hardware noise, where the colormap indicates the time frame of detection.  The red lines are "potential ASOs".  There is high tracking noise when following a Low Earth Orbit object results in false positives (stars) and false negatives (missing tracks), which we will address in future updates.  See  [Interactive Starlink Plot](https://rawcdn.githack.com/ut-astria/PyCIS/d1c7a943fb445505a5d87da48b07fb0446b5a90a/docs/a0t13m1b1_ASSOC1T80W20O0_e0_inj-1_20201224_26407_navstar-48_FINALVOL.html) for further visualization. 
-![Demo Video](docs/videoAll_a0t10m1b2_A21B40_e0_inj-1_20201220_45696_starlink-1422.gif)
-
-Running demo script takes approximatly 15 minutes to process the Starlink example (with 2-pixel binning) and 60 minutes to process the Navstar example (with 1-pixel binning).  This was tested on a single Skylake node of the Stampede2 system of the Texas Advanced Computing Center at the University of Texas at Austin.  
-
-------------------------------------------------------------------
-
-## DATASET
-
-The datasets available at the Texas Data Repository link below contains a sequence of 66 FITS-format data frames collected from the 
-New Mexico Skies telecope of the ASTRIANet telescope network, tracking the Starlink-1422 satellite on the night of Dec. 20, 2020. Relevant observation data can be found 
-in the FITS headers, printable by turning on the 'headerflag' variable in 
-`<import_fits.py>`.  See citations below.  
-
-Feuge-Miller, Benjamin; Kucharski, Daniel; Iyer, Shiva; Jah, Moriba, 2021, 
-"ASTRIANet Data for: Python Computational Inference from Structure (PyCIS)", 
-https://doi.org/10.18738/T8/GV0ASD, Texas Data Repository, V3  
 
 ------------------------------------------------------------------
 
@@ -148,11 +142,14 @@ Input and output locations and names are specified within the main file, see `<r
 ------------------------------------------------------------------
 
 ## REFERENCES 
-(see REFERENCES.txt for full citations)
 
-* ASTRIANet data resources: [Feuge-Miller_2021]
-* Background NFA formulations: [Desolneux_2000] [Desolneux_2008] [Desolneux_2016]
-* Initial LSD algorithm: See the PyCIS-LSD repo
+* ASTRIANet
+    * B. Feuge-Miller, M. Jah, “A-Contrario Structural Inference for Space Object Detection and Tracking”, *in 8th Annual IAA Space Traffic Management Conference*, Austin, TX, 2022
+    * Feuge-Miller, Benjamin; Kucharski, Daniel; Iyer, Shiva; Jah, Moriba, 2021, "ASTRIANet Data for: Python Computational Inference from tructure (PyCIS)", https://doi.org/10.18738/T8/GV0ASD, Texas Data Repository, V3  
+* A-Contrario Theory
+    * A. Desolneux, L. Moisan, J.-M. Morel, Meaningful alignments, International journal of computer vision 40 (1) (2000) 7–23. doi:10.1023/A:1026593302236.
+    * A. Desolneux, L. Moisan, J.-M. Morel, From gestalt theory to image analysis: a probabilistic approach, Vol. 34, Springer Science & Business Media, 2007. doi:https://doi.org/10.1007/978-0-387-74378-3.
+
  
 ------------------------------------------------------------------
 

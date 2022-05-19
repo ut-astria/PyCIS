@@ -6,7 +6,7 @@ pylib/run_pycis_lsd.py: Pipeline for detecting linear feautures by calling the L
 Benjamin Feuge-Miller: benjamin.g.miller@utexas.edu
 The University of Texas at Austin, 
 Oden Institute Computational Astronautical Sciences and Technologies (CAST) group
-Date of Modification: February 16, 2022
+Date of Modification: May 5, 2022
 
 --------------------------------------------------------------------
 PyCIS: An a-contrario detection algorithm for space object tracking from optical time-series telescope data. 
@@ -36,7 +36,7 @@ import numpy as np
 
 
 #blockprocessor
-from multiprocessing import Pool, cpu_count,get_context,set_start_method
+from multiprocessing import cpu_count,get_context #, Pool, set_start_method
 #Call the LSD function
 from pylsd.pycis_lsd_wrapper import main as pycis_lsd_wrapper
  
@@ -46,7 +46,7 @@ def run_pycis_lsd(
     I3, outfolder, prename,
     numsteps,bigparallel,
     solvemarkov,resolve,printonly,
-    a,tc):
+    a,tc,returnmarkov=False,p1in=None,p2in=None,fullsize=None):
     '''
     Main interface : run test 
     Input: data/...
@@ -92,7 +92,10 @@ def run_pycis_lsd(
     sigma=.6 #Gaussian downsampling deviation factor
 
     #Image and parallelization parameters
-    shaper = (I3.shape[0], I3.shape[1], I3.shape[2])
+    if isinstance(fullsize,list):# and isinstance(p2in,list):
+        shaper = fullsize#(I3.shape[0], I3.shape[1], I3.shape[2])
+    else:
+        shaper = (I3.shape[0], I3.shape[1], I3.shape[2])
     emptyset = np.eye(2)
     memsize = I3.size*I3.itemsize/1.0e9
     print('NUMSIZE:',I3.shape)
@@ -104,7 +107,8 @@ def run_pycis_lsd(
 
     if bigparallel==0:  
         process_count = numsteps
-        process_count = min(min(process_count,numsteps**1),cpu_count())
+        process_count = min(min(process_count,numsteps),cpu_count())
+        #process_count = 1        
         chunks = min(1,int(numsteps/process_count))
     else:
         process_count = numsteps**2
@@ -113,35 +117,49 @@ def run_pycis_lsd(
 
 
     print('cpus: %d / %d'%(process_count,cpu_count()))
-    p=[0,0,0,0,0,0,0,0,0,0,0,0]
-    p2=[0,0,0,0,0,0,0,0,0,0,0,0]
+    if isinstance(p1in,list) and isinstance(p2in,list):
+        p=p1in
+        p2=p2in
+    else:
+        p=[0,0,0,0,0,0,0,0,0,0,0,0]
+        p2=[0,0,0,0,0,0,0,0,0,0,0,0]
 
 
-    ##############################################################################################################
-    ##############################################################################################################
-    ##############################################################################################################
+        ##############################################################################################################
+        ##############################################################################################################
+        ##############################################################################################################
 
-    ## COMPUTE MARKOV KERNELS 
+        ## COMPUTE MARKOV KERNELS 
 
-    if solvemarkov==1:
-        ## COMPUTE FOR EACH PARTITION 
-        #Edge line kerneel
-        pset=np.zeros((numsteps,numsteps,12))
-        iterable=[]
-        a=ae;t=te;
-        for xi,xidx in enumerate(range(0, I3.shape[0], xstep)):
-            if bigparallel==0:
-                iterable=[]
-            for yi,yidx in enumerate(range(0,I3.shape[1], ystep)):  
-                name = "%d_%d_%s"%(xi,yi,prename)
-                if ((xidx+xstep)>I3.shape[0]) or ((yidx+ystep)>I3.shape[1]):
-                    continue
-                if os.path.exists('%s/data1_%s.npy'%(outfolder,name)) and resolve==0:
-                    continue 
-                I3b = I3[xidx:xidx+xstep, yidx:yidx+ystep, :]
-                iterable.append((np.copy(emptyset), np.copy(I3b),outfolder,name,
-                    a,d,t,scale,sigma,e,2,p,p2,(xi,yi),shaper))
-            if bigparallel==0:
+        if solvemarkov==1:
+            ## COMPUTE FOR EACH PARTITION 
+            #Edge line kerneel
+            pset=np.zeros((numsteps,numsteps,12))
+            iterable=[]
+            a=ae;t=te;
+            for xi,xidx in enumerate(range(0, I3.shape[0], xstep)):
+                if bigparallel==0:
+                    iterable=[]
+                for yi,yidx in enumerate(range(0,I3.shape[1], ystep)):  
+                    name = "%d_%d_%s"%(xi,yi,prename)
+                    if ((xidx+xstep)>I3.shape[0]) or ((yidx+ystep)>I3.shape[1]):
+                        continue
+                    if os.path.exists('%s/data1_%s.npy'%(outfolder,name)) and resolve==0:
+                        continue 
+                    I3b = I3[xidx:xidx+xstep, yidx:yidx+ystep, :]
+                    iterable.append((np.copy(emptyset), np.copy(I3b),outfolder,name,
+                        a,d,t,scale,sigma,e,2,p,p2,(xi,yi),shaper))
+                if bigparallel==0:
+                    with get_context("spawn").Pool(processes=process_count,maxtasksperchild=1) as pool:
+                        results=pool.starmap(pycis_lsd_wrapper,iterable,chunksize=chunks)
+                    for r in results:
+                        idxs = np.array(r[0])
+                        print(idxs)
+                        vals = np.array(r[1])
+                        print(vals)
+                        outv = np.asarray(vals[10:])
+                        pset[int(idxs[0]),int(idxs[1]),:] = outv[np.newaxis,np.newaxis,:]
+            if not bigparallel==0:
                 with get_context("spawn").Pool(processes=process_count,maxtasksperchild=1) as pool:
                     results=pool.starmap(pycis_lsd_wrapper,iterable,chunksize=chunks)
                 for r in results:
@@ -151,34 +169,34 @@ def run_pycis_lsd(
                     print(vals)
                     outv = np.asarray(vals[10:])
                     pset[int(idxs[0]),int(idxs[1]),:] = outv[np.newaxis,np.newaxis,:]
-        if not bigparallel==0:
-            with get_context("spawn").Pool(processes=process_count,maxtasksperchild=1) as pool:
-                results=pool.starmap(pycis_lsd_wrapper,iterable,chunksize=chunks)
-            for r in results:
-                idxs = np.array(r[0])
-                print(idxs)
-                vals = np.array(r[1])
-                print(vals)
-                outv = np.asarray(vals[10:])
-                pset[int(idxs[0]),int(idxs[1]),:] = outv[np.newaxis,np.newaxis,:]
 
-        #Center line kernel
-        p2set=np.zeros((numsteps,numsteps,12))
-        iterable=[]
-        a=ac;t=tc;
-        for xi,xidx in enumerate(range(0, I3.shape[0], xstep)):
-            if bigparallel==0:
-                iterable=[]
-            for yi,yidx in enumerate(range(0,I3.shape[1], ystep)):  
-                name = "%d_%d_%s"%(xi,yi,prename)
-                if ((xidx+xstep)>I3.shape[0]) or ((yidx+ystep)>I3.shape[1]):
-                    continue
-                if os.path.exists('%s/data1_%s.npy'%(outfolder,name)) and resolve==0:
-                    continue 
-                I3b = I3[xidx:xidx+xstep, yidx:yidx+ystep, :]
-                iterable.append((np.copy(emptyset), np.copy(I3b),outfolder,name,
-                    a,d,t,scale,sigma,e,3,p,p2,(xi,yi),shaper))
-            if bigparallel==0:
+            #Center line kernel
+            p2set=np.zeros((numsteps,numsteps,12))
+            iterable=[]
+            a=ac;t=tc;
+            for xi,xidx in enumerate(range(0, I3.shape[0], xstep)):
+                if bigparallel==0:
+                    iterable=[]
+                for yi,yidx in enumerate(range(0,I3.shape[1], ystep)):  
+                    name = "%d_%d_%s"%(xi,yi,prename)
+                    if ((xidx+xstep)>I3.shape[0]) or ((yidx+ystep)>I3.shape[1]):
+                        continue
+                    if os.path.exists('%s/data1_%s.npy'%(outfolder,name)) and resolve==0:
+                        continue 
+                    I3b = I3[xidx:xidx+xstep, yidx:yidx+ystep, :]
+                    iterable.append((np.copy(emptyset), np.copy(I3b),outfolder,name,
+                        a,d,t,scale,sigma,e,3,p,p2,(xi,yi),shaper))
+                if bigparallel==0:
+                    with get_context("spawn").Pool(processes=process_count,maxtasksperchild=1) as pool:
+                        results=pool.starmap(pycis_lsd_wrapper,iterable,chunksize=chunks)
+                    for r in results:
+                        idxs = np.array(r[0])
+                        print(idxs)
+                        vals = np.array(r[1])
+                        print(vals)
+                        outv = np.asarray(vals[10:])
+                        p2set[int(idxs[0]),int(idxs[1]),:] = outv[np.newaxis,np.newaxis,:]
+            if not bigparallel==0:
                 with get_context("spawn").Pool(processes=process_count,maxtasksperchild=1) as pool:
                     results=pool.starmap(pycis_lsd_wrapper,iterable,chunksize=chunks)
                 for r in results:
@@ -188,57 +206,48 @@ def run_pycis_lsd(
                     print(vals)
                     outv = np.asarray(vals[10:])
                     p2set[int(idxs[0]),int(idxs[1]),:] = outv[np.newaxis,np.newaxis,:]
-        if not bigparallel==0:
+                    
+        elif not (os.path.exists('%s/data1_%s.npy'%(outfolder,prename)) and resolve==0):
+            name=prename
+            ## COMPUTE FOR ONE PARTITION AND ASSUME UNIFORM
+            pset=np.zeros((numsteps,numsteps,12))
+            p2set=np.zeros((numsteps,numsteps,12))
+            I3b = I3[:xstep, :ystep, :]
+            # Edge line kernel
+            a=ae;d=de;t=te;
+            iterable=[(np.copy(emptyset), np.copy(I3b),outfolder,name,
+                        a,d,t,scale,sigma,e,2,p,p2,(0,0),shaper)]
             with get_context("spawn").Pool(processes=process_count,maxtasksperchild=1) as pool:
-                results=pool.starmap(pycis_lsd_wrapper,iterable,chunksize=chunks)
+                    results=pool.starmap(pycis_lsd_wrapper,iterable,chunksize=1)
             for r in results:
-                idxs = np.array(r[0])
-                print(idxs)
-                vals = np.array(r[1])
-                print(vals)
-                outv = np.asarray(vals[10:])
-                p2set[int(idxs[0]),int(idxs[1]),:] = outv[np.newaxis,np.newaxis,:]
-                
-    elif not (os.path.exists('%s/data1_%s.npy'%(outfolder,prename)) and resolve==0):
-        name=prename
-        ## COMPUTE FOR ONE PARTITION AND ASSUME UNIFORM
-        pset=np.zeros((numsteps,numsteps,12))
-        p2set=np.zeros((numsteps,numsteps,12))
-        I3b = I3[:xstep, :ystep, :]
-        # Edge line kernel
-        a=ae;d=de;t=te;
-        iterable=[(np.copy(emptyset), np.copy(I3b),outfolder,name,
-                    a,d,t,scale,sigma,e,2,p,p2,(0,0),shaper)]
-        with get_context("spawn").Pool(processes=process_count,maxtasksperchild=1) as pool:
-                results=pool.starmap(pycis_lsd_wrapper,iterable,chunksize=1)
-        for r in results:
-            outv = np.array(r[1])
-        p = np.copy(np.asarray(outv[10:]))
-        #Center line kernel
-        a=ac;d=dc;t=tc;
-        iterable=[(np.copy(emptyset), np.copy(I3b),outfolder,name,
-                    a,d,t,scale,sigma,e,3,p,p2,(0,0),shaper)]
-        with get_context("spawn").Pool(processes=process_count,maxtasksperchild=1) as pool:
-                results=pool.starmap(pycis_lsd_wrapper,iterable,chunksize=1)
-        for r in results:
-            outv = np.array(r[1])
-        p2 = np.copy(np.asarray(outv[10:]))
-        #Merge
-        for xi,xidx in enumerate(range(0, I3.shape[0], xstep)):
-            for yi,yidx in enumerate(range(0,I3.shape[1], ystep)):  
-                if ((xidx+xstep)>I3.shape[0]) or ((yidx+ystep)>I3.shape[1]):
-                    continue
-                pseti = np.copy(np.asarray(p))
-                pset[xi,yi,:] = pseti[np.newaxis,np.newaxis,:] 
-                p2seti = np.copy(np.asarray(p2))
-                p2set[xi,yi,:] = p2seti[np.newaxis,np.newaxis,:]
+                outv = np.array(r[1])
+            p = np.copy(np.asarray(outv[10:]))
+            #Center line kernel
+            a=ac;d=dc;t=tc;
+            iterable=[(np.copy(emptyset), np.copy(I3b),outfolder,name,
+                        a,d,t,scale,sigma,e,3,p,p2,(0,0),shaper)]
+            with get_context("spawn").Pool(processes=process_count,maxtasksperchild=1) as pool:
+                    results=pool.starmap(pycis_lsd_wrapper,iterable,chunksize=1)
+            for r in results:
+                outv = np.array(r[1])
+            p2 = np.copy(np.asarray(outv[10:]))
+            #Merge
+            for xi,xidx in enumerate(range(0, I3.shape[0], xstep)):
+                for yi,yidx in enumerate(range(0,I3.shape[1], ystep)):  
+                    if ((xidx+xstep)>I3.shape[0]) or ((yidx+ystep)>I3.shape[1]):
+                        continue
+                    pseti = np.copy(np.asarray(p))
+                    pset[xi,yi,:] = pseti[np.newaxis,np.newaxis,:] 
+                    p2seti = np.copy(np.asarray(p2))
+                    p2set[xi,yi,:] = p2seti[np.newaxis,np.newaxis,:]
     
-
+    
     ##############################################################################################################
     ##############################################################################################################
     ##############################################################################################################
 
-
+    if returnmarkov:
+        return p,p2
     ## COMPUTE LINE FEATURES
     prenamecopy = prename        
     p[:6]=p2[:6]

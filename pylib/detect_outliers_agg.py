@@ -4,13 +4,11 @@ PyCIS - Python Computational Inference from Structure
 pylib/detect_outliers.py: 2nd-order classification by clustering and outlier rejection
     agglomerative heirarchical clustering method
 
-TODO:
-  Clean up indexing and variable passing
 
 Benjamin Feuge-Miller: benjamin.g.miller@utexas.edu
 The University of Texas at Austin, 
 Oden Institute Computational Astronautical Sciences and Technologies (CAST) group
-Date of Modification: February 16, 2022
+Date of Modification: March 3, 2022
 
 --------------------------------------------------------------------
 PyCIS: An a-contrario detection algorithm for space object tracking from optical time-series telescope data. 
@@ -33,33 +31,25 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 '''
 
 import os
-import argparse
-import numpy as np
-import scipy as sp
-from scipy import stats 
-from sklearn.decomposition import PCA
-from sklearn.mixture import BayesianGaussianMixture
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-#Numpy Settings
-np.set_printoptions(precision=2)
-np.seterr(all='ignore')
 import time
 from datetime import datetime
-import pandas as pd
-from multiprocessing import Pool, cpu_count,get_context,set_start_method
 from itertools import chain
+import numpy as np
+np.seterr(all='ignore')
+np.set_printoptions(precision=2)
+import scipy as sp
+from scipy import stats 
+import pandas as pd
+from sklearn.decomposition import PCA
+from sklearn.mixture import BayesianGaussianMixture
 import functools
-import cv2
-from pylib.print_detections import interp_frame, interp_frame_xy, build_xyzplot
+from multiprocessing import cpu_count, get_context #,Pool,set_start_method
 import subprocess
-import plotly.express as px
-import plotly.graph_objects as go
-
-
-
-
+import signal 
+#import tempfile
+from pylib.print_detections import interp_frame_xy
+from pylib.detect_utils import my_filter, remove_matches_block
+ 
 def RunBayes(k,xnum, X, wcp=1e-2,wtype='distribution',mpp=1e-2,cp=1):
     '''
     Compute GMM to rank r<k using variational bayesian inference
@@ -77,13 +67,14 @@ def RunBayes(k,xnum, X, wcp=1e-2,wtype='distribution',mpp=1e-2,cp=1):
     model.fit(X)
     return model
 
-def PCA(linesNormIn, numvars=6):
-    '''
-    Compute PCA
-    '''
+def PCA(linesNormIn, numvars=6,scale=False):
+    ''' Compute PCA (Scale=True will normalize the lines to only consider pointing data, default false) '''
     # linesNorm: 
     #    [0=length, 1=maxwidth, 2=minwidth, 3=az, 4=el, 5=nfa]
     linesNorm = np.copy(linesNormIn)
+    scalevec=np.ones((linesNorm.shape[0],))
+    if scale:
+        scalevec = np.copy(linesNorm[:,1])
 
     #select features for PCA
     if numvars==3:
@@ -98,6 +89,7 @@ def PCA(linesNormIn, numvars=6):
         # length-agnostic features (in case of fragmentation)
         #   (maxwidth, minwidth, az, el)
         linesNorm=linesNorm[:,[3,4]]
+        #linesNorm=linesNorm[:,[1,2]]
     elif numvars==4:
         # length-agnostic features (in case of fragmentation)
         #   (maxwidth, minwidth, az, el)
@@ -108,12 +100,12 @@ def PCA(linesNormIn, numvars=6):
         #Simply select data
         linesNorm = linesNorm[:,:(numvars)]
         print('dim: ',linesNorm.shape[-1])
+    
     failflag=0
+    if scale:
+        linesNorm = np.asarray(linesNorm) / np.asarray(scalevec).squeeze().reshape((-1,1)) #only pointing data, not length 
     for x in range(linesNorm.shape[1]):
         if np.all(linesNorm[:,x]==linesNorm[0,x]):
-            #print("ERROR: detect_outliers: all elements on linesNorm index %d are identical"%x,flush=True)
-            #print("\t this may be due to, say, only detecting spatial features with elevation pi/2",flush=True)
-            #quit()
             failflag=1
     if failflag==0:
         ## WHITENING
@@ -135,9 +127,7 @@ def PCA(linesNormIn, numvars=6):
     return linesNorm, linesNormPCA, proj
 
 def standardize(XIn, method):
-    '''
-    Perform whitening or unit scaling 
-    '''    
+    '''    Perform whitening or unit scaling     '''    
     XFull=np.copy(XIn)
     Y=np.copy(XFull)
     for column in range(XFull.shape[1]):
@@ -158,13 +148,21 @@ def standardize(XIn, method):
     return XFull
 
 def run_pca(linesFilt,linesNorm,pcanum,xnum): 
-    '''
-    Perform the whitening and scaling processes checking sizing and low-rank projection
-    '''
+    '''    Perform the whitening and scaling processes checking sizing and low-rank projection    '''
     #Compute PCA on select features of training data 
-    _, linesFiltPCA,proj = PCA(linesFilt, pcanum)
+    scale=False
+    if xnum==2 and pcanum==3:
+        xnum=3
+        scale=True
+    if xnum<0 and pcanum==3:
+        xnum=-xnum
+        scale=True
+    elif xnum<0 and pcanum!=3:
+        print('xnum<0 and pcanum!=3 invalid combination')
+        quit()
+    _, linesFiltPCA,proj = PCA(linesFilt, pcanum,scale=scale)
     # Filter testing set to features of choice
-    linesNormFilt, _,_ =   PCA(np.copy(linesNorm), pcanum)
+    linesNormFilt, _,_ =   PCA(np.copy(linesNorm), pcanum,scale=scale)
     #Project testing data to principal components of training data 
     linesFullPCA = np.copy(linesNormFilt).dot(proj)
     
@@ -187,12 +185,14 @@ def run_pca(linesFilt,linesNorm,pcanum,xnum):
 
 
 def format_lines(lines,a=10,aa=4906, filt=0):
-    '''
-    Format lines for matrix processing
-    '''
+    '''    Format lines for matrix processing    '''
     #Convert line vector to feature matrix 
     l = np.size(np.asarray(lines))/a
-    lines = np.reshape(np.asarray(lines).T,(-1,a),order='F')
+    lines = np.asarray(lines)
+    if lines.ndim!=2:
+        lines = np.reshape(np.asarray(lines).T,(-1,a),order='F')
+    elif lines.shape[1]!=a:
+        lines = np.reshape(np.asarray(lines).T,(-1,a),order='F')
 
     #Ensure NFA is never infinite
     initcount = len(lines)
@@ -239,141 +239,9 @@ def format_lines(lines,a=10,aa=4906, filt=0):
 
     return lines
 
-def my_multinomial_logsf_backup(k,n,p):
-    ''' OBSOLETE '''
-    s = 0
-    flag = 0
-    p1,p2 = p
-    x=[]
-    mylen = 0
-
-    for i in range(k[0],n-1-k[1]):
-        mylen=mylen+(n-i-k[1])
-    mycounter=0
-    x = np.empty((mylen,3))
-
-    for i in range(k[0],n-1-k[1]):
-        y = np.empty((n-i-k[1],3))
-        y[:,0] = i;
-        y[:,1] = np.arange(k[1], n-i)
-        y[:,2] = n-i-y[:,1]
-        ylen = len(y)
-        x[mycounter:mycounter+ylen,:]=y
-        mycounter=mycounter+ylen
-
-    try:
-        lpmf = stats.multinomial.logpmf(x,n=n,p=[p1,p2,1.-p1-p2])
-    except Exception as e:
-        print('X', x)
-        print('K',k)
-        print('n',n)
-        print('ps:',(p1,p2,1-p1-p2))
-        print(e)
-        quit()
-    s = sp.special.logsumexp(lpmf)
-    return s
-
-def my_multinomial_logsf_comb(k,n,p):
-    ''' Compute the trinomial joint tail sf for [k1,k2] up to n with [p1,p2] probability '''
-    s = 0
-    flag = 0
-    p1=p[0]
-    p2=p[1]
-    x=[]
-    mylen = 0
-
-    lp1 = np.log(p1)
-    lp2 = np.log(p2)
-    lp0 = np.log(1.-p1-p2)
-    tail = np.nan
-    #COMPUTE TRINOMIAL COEFF (not multinomial)
-    #VECTORIZING might save time
-    elements = int((k[0]+k[1]-n-1)*(k[0]+k[1]-n)/2)
-    data = np.zeros((elements,2 ))
-    counter=0
-    for i in range(k[0],n-k[1]):
-        for j in range(k[1], n-i):
-            data[counter,:]=[int(i),int(j)]
-            counter=counter+1
-    lcoeff = np.log(sp.special.comb(int(n),data[:,0]).astype('float'))
-    lcoeff = np.log(sp.special.comb(int(n)-data[:,0],data[:,1]).astype('float')) + lcoeff
-    data = data.astype('float')
-    lprob = data[:,0]*lp1 + data[:,1]*lp2 + (float(n)-data[:,0]-data[:,1])*lp0
-    lprob = lprob + lcoeff
-    tail = sp.special.logsumexp(lprob)
-    return tail
-
-def my_multinomial_logsf(k,n,p):
-    ''' 
-    Compute the trinomial joint tail sf for [k1,k2] up to n with [p1,p2] probability 
-    Use fast array construction and the Sterling approximation of the trinomial coefficient
-    '''
-    s = 0
-    flag = 0
-    p1=p[0]
-    p2=p[1]
-    x=[]
-    mylen = 0
-
-    lp1 = np.log(p1)
-    lp2 = np.log(p2)
-    lp0 = np.log(1.-p1-p2)
-    tail = np.nan
-    #COMPUTE TRINOMIAL COEFF (not multinomial)
-    #VECTORIZING might save time
-    #Define data indices
-    xv,yv = np.meshgrid( np.arange(k[0], n-k[1],dtype=float), np.arange(k[1],n-k[0],dtype=float))
-    xv[yv>=n-xv]=-1.
-    data=np.vstack([xv.ravel(),yv.ravel()])
-    data=data[:,data.min(axis=0)>0.].T
-    #Compute trinomial coefficients using Sterling's approximation (avoid overflow)
-    N=float(n)
-    M=data[:,0]
-    lcoeff = N*np.log(N) - M*np.log(M) - (N-M)*np.log(N-M) + 0.5*(np.log(N)-np.log(M)-np.log(N-M)-np.log(2*np.pi))
-    lcoeff=np.copy(lcoeff)
-    N=float(n)-data[:,0]
-    M=data[:,1]
-    lcoeff = lcoeff + N*np.log(N) - M*np.log(M) - (N-M)*np.log(N-M) + 0.5*(np.log(N)-np.log(M)-np.log(N-M)-np.log(2*np.pi))
-    #Compute tail probability 
-    lprob = data[:,0]*lp1 + data[:,1]*lp2 + (float(n)-data[:,0]-data[:,1])*lp0
-    lprob = lprob + lcoeff
-    tail = sp.special.logsumexp(lprob)
-    return tail
-
-
-def ball_nfa_2(k1,k2,n,p1,p2,Nt,minpts,maxpts):
-    ''' compute nfa of cluster '''
-    #Ntests = (Nt *(Nt-1.))/2.
-    Ntests=Nt
-    if k1<=minpts or k2<minpts:
-        nfa=-101.
-    elif k1>=maxpts or k2>=maxpts:
-        nfa=-101.
-    else:
-        r1 = float(k1)/float(n)
-        r2 = float(k2)/float(n)
-        r0 = 1.-r1-r2
-        p0 = 1.-p1-p2
-        if (r1==1 or r1==0) or (r2==1 or r2==0):
-            nfa=-101.
-        else:
-            #tail = stats.multinomial.logsf(k=[k1,k2],n=n,p=[p1,p2])
-            tail = my_multinomial_logsf(k=[k1,k2],n=n,p=[p1,p2])
-            nfa = -(tail/np.log(10.))-np.log10(Ntests)
-            #if nfa>200: #use moment generating estimate bounds
-            #    #Kulback-Liebler Divergence for Large Deviation 
-            #    #Moment generating tail, Agrawal, R. (2020) Finite-Sample Concentration of the Multinomial in Relative Entropy
-            #    tail = -n*( r1*np.log(r1/p1) + r2*np.log(r2/p2) + r0*np.log(r0/p0))
-            #    nfa = -(tail/np.log(10.))-np.log10(Ntests)
-            if np.math.isinf(nfa):
-                nfa=1001.
-            elif np.math.isnan(nfa):
-                print('ISNAN')
-                quit()
-    return nfa     
 
 def ball_nfa(k,n,p,Ntests,minpts,maxpts):
-    ''' compute nfa of cluster '''
+    ''' compute nfa of cluster using a binomial law '''
     if k<=minpts:
         nfa=-101.
     elif k>=maxpts:
@@ -395,93 +263,39 @@ def ball_nfa(k,n,p,Ntests,minpts,maxpts):
                 quit()
     return nfa     
 
-def acclust(radius,maxradius,dims,Ntests,Nrads,XFullIn):
-    '''
-    Parallelizable proximity clustering to build NFA lookup table 
-    
-    Input: 
-        radius:    tested radius for clustering
-        maxradius: maximum radius of data
-        dims:      data dimensionality 
-        Ntests:    total hypothetical number of tests
-        Nrads:     number of radii in Ntests 
-        XFullIn:   data to cluster on 
-    
-    Output: 
-    
-
-    '''
-
-    XFull = np.copy(XFullIn)
-    #Number of total points in original set vs those currently measurable
-    n = int(Ntests/Nrads)
-    nb = len(XFull)
-    # Probability, minimum and maximum set sizes
-    prob = ((2.*radius) / maxradius )**dims
-    p=prob
-    minpts = max(int(np.ceil(p*n)+1),2) #uniform case is lower bound
-    maxpts = 1.* n 
-    #Build tree and storage
-    tree = sp.spatial.KDTree(np.copy(XFull))
-    maxn = 1000 #maximum size of comparison tree 
-    pt1list = []
-    balllist = []
-    radiuslist = []
-    nfalist = []
-
-    #Subsampling case  
-    if nb>maxn:
-        for i in range(0,nb,maxn):
-            if i>=nb:
-                continue
-            j = min(nb,i+maxn)
-            XFullB = np.copy(XFull[i:j,:])
-            tree2 = sp.spatial.KDTree(XFullB)
-            ball = tree2.query_ball_tree(tree,r=radius, p=1)
-            for pt1 in range(len(ball)):
-                ptball =  ball[pt1]
-                k = len(ptball)
-                nfa = ball_nfa(k,n,p,Ntests,minpts,maxpts)
-                pt1list.append(pt1)
-                balllist.append(ball[pt1])
-                radiuslist.append(radius)
-                nfalist.append(nfa)
-
-    else:
-        tree2 = sp.spatial.KDTree(XFull)
-        ball = tree2.query_ball_tree(tree,r=radius, p=1)
-        for pt1 in range(len(ball)):
-            ptball =  ball[pt1]
-            k = len(ptball)
-            nfa = ball_nfa(k,n,p,Ntests,minpts,maxpts)
-            pt1list.append(pt1)
-            balllist.append(ball[pt1])
-            radiuslist.append(radius)
-            nfalist.append(nfa)
-
-    return [pt1list,balllist,radiuslist,nfalist]
-
-
-
 def makeinit(lines, R,nparts, dims, NUMPOINTS):
+    ''' 
+    Initialize the hierarchicial agglomerative clustering tree 
+    Inputs:
+        lines: set of features to consider
+        R: The "N_T" number of tests, total hypperrectangles in domain
+        nparts: The number of paritions of the data
+        dims: The dimensions of the data 
+        NUMPOINTS: The total number of line candidates, in case lines has been reduces by recursive filtering
+    Output: 
+        df_tree: Pandas table with "leaf" and "cluster" columns.
+            leaf: (partition index, partition nfa)
+            cluster: set of lines in the respective partition
+        linecores: The coordinates of the middle of each parition
+    '''
     step=1./nparts
     Ntests=R
-    #Ntests = int(nparts**dims)
     n = NUMPOINTS #len(lines)
     p = step**dims #==1/numcubes
     minpts = max(int(np.ceil(p*n)+1),2) #uniform case is lower bound
     maxpts = 1.* n 
     #Ntests is regions while n is pts, should have Ntests<npts
     print('INIT: nparts %d, Ntests %d, n %d, p %.2e, minpts %d, matplts %d'%(nparts,Ntests,n,p,minpts,maxpts))    
-    
+    #Define the center of each parititon, the finest area of the agglomerative method
     cores = np.indices(tuple(np.asarray(np.ones(dims)*(nparts),dtype=int)))
     cores = cores.T.reshape(-1,dims)
     cores = (cores+1.)*step - step/2 #normalize to unit cube
-
+    #Parition the line data according to the this partitioning 
     linecores = np.zeros_like(lines)
     linetree = sp.spatial.KDTree(np.copy(lines))
     coretree = sp.spatial.KDTree(np.copy(cores))
     balls = coretree.query_ball_tree(linetree,r=step/2., p=np.inf)
+    #Store the partitioned data
     pt1list = []
     balllist = []
     radiuslist = []
@@ -498,17 +312,12 @@ def makeinit(lines, R,nparts, dims, NUMPOINTS):
             continue 
         ksum=ksum+k
         nfa = ball_nfa(k,n,p,Ntests,minpts,maxpts)
-        #if k>minpts:
-        #    print('k,n,p,N,nfa:',[k,n,p,Ntests,nfa])
         pt1list.append(ptcount)
         balllist.append(balls[pt1])
         nfalist.append(nfa)
         ptcount=ptcount+1
   
-    test = np.asarray(nfalist)
-    #test = test[test!=-101.0]
-    #print('num non-101 nfas: ',test.shape) 
-    #tree to track nfa layers for cluster idx of orig poins
+    #build pandas tree to track nfa layers for cluster idx of orig poins
     df_tree = pd.DataFrame(
         {'leaf': list(zip(pt1list,nfalist)), 'cluster': balllist},
         columns=['leaf','cluster']) #append node: zip(layeridx,nfa)i
@@ -516,124 +325,119 @@ def makeinit(lines, R,nparts, dims, NUMPOINTS):
     nfatest = np.array(nfatest)[:,1]
     return df_tree,linecores 
 
-def newlayer_par(df_tree, lastlist, numleafs,last, now, lines, R, M, step,node, other):
-    #print([node,other])
-    nfaout = -101. 
-    #Get node information 
-    node=int(node)
-    node_tree = df_tree.loc[lastlist==node]
-    nodecubes = len(node_tree)
-    p_node = nodecubes/numleafs
-    node_clusters = node_tree['cluster'].to_list()
-    node_clusters = list(chain.from_iterable(node_clusters))
-    k_node = len(node_clusters)
-    node_nfa = node_tree[last].to_list()
-    node_nfa = np.array(node_nfa)
-    node_nfa = node_nfa[0,1]
-        
-    #collect other node, not self
-    other=int(other)
-    other_tree = df_tree.loc[lastlist==other]
-    #get node information
-    othercubes = len(other_tree)
-    p_other = othercubes/numleafs 
-    other_clusters = other_tree['cluster'].to_list()
-    other_clusters = list(chain.from_iterable(other_clusters))
-    k_other = len(other_clusters)
-    #CHECK FOR ADJACENCY 
-    dAB = 1.;
-    #lines = Xnocores = linecores
 
-    #finish gathering properties 
-    #p is a volumetric fraction, doesn't care about points
-    p = (nodecubes+othercubes)/numleafs
-    k = k_node + k_other
-    other_nfa = other_tree[last].to_list()
-    other_nfa = np.array(other_nfa)
-    other_nfa = other_nfa[0,1]
-    #Rg is 'size of new combined clusters'
-    #Rg = numleafs / (nodecubes+othercubes)
-    #R1 = numleafs / (nodecubes)
-    #R2 = numleafs / (nodecubes)
-    #Rgg = R1*(R2-1)/2 if R1==R2 else R1*R2/2
-    Rg=R; Rgg=R*(R-1)/2;
-    #print('nodes %d, others %d, net %d, all %d'%(nodecubes,othercubes,nodecubes+othercubes,numleafs))
-    #print('R1 %.1f, R2 %.1f, Rg %.1f, Rgg %.1f'%(R1,R2,Rg, Rgg))
-    nfa_g  = ball_nfa(k,M,p,Rg,p*M,M)
-    #logspace conditionsi
-    #merge only, don't seek to define e-meaningful 
-    #if nfa_g<0:
-    #    continue
-    if nfa_g<=max(node_nfa,other_nfa):
-        return node, other, nfaout
-    if nfa_g <= (-np.log10(.5) + node_nfa + other_nfa): 
-        return node, other, nfaout
-    #R1 is 'size of exising cluster'
-    #R2 is 'size of other cluster, removing existing if same'
-    #Rgg = R1*(R-1)/2
-    nfa_gg = ball_nfa_2(k_node,k_other,M,
-        p_node,p_other,Rgg,min(p_node,p_other)*M,M)
-    #logspace conditions
-    if  nfa_g >= nfa_gg:  ## ancestors and decendents implicit 
-        nfaout = nfa_g
-    return node, other, nfaout
 
-def newlayer_par_fast(Rgg, M,
-    node, other,
-    p_node, k_node, node_nfa, p_other, k_other, other_nfa, nfa_g):
-    #ONLY PARALLELIZE THE TRINOMIAL COMPUTATIONS
-    #startT=time.time()
+def newlayer_par_fast_compiled(Rgg,n,node,other,
+    p1,k1,node_nfa,p2,k2,other_nfa,nfa_g):
+    '''
+    A parallelization-friendly function for solving the trinomial NFA of the agglomerative merging critera
+    See:
+        F. Cao, J. Delon, A. Desolneux, P. Muse, F. Sur (2004) "An A-contrario approach to hierarchical clustering validity assessment", Diss. INRIA
 
-    nfa_gg = ball_nfa_2(k_node,k_other,M, p_node,p_other,Rgg,min(p_node,p_other)*M,M)
-
-    #logspace conditions
-    if  nfa_g >= nfa_gg:  ## ancestors and decendents implicit
-        #merge condition
+    Inputs:
+        Rgg: The numeber of tests for the trinomial nfa 
+        n: The number of point features in total
+        node/other: The indicies of the unmerged region in the pandas tree
+        p1/p2: The independet uniform probability of an element being in either region (area ratio) 
+        k1/k2: The number of points in either region
+        node_nfa/other_nfa: binomial nfa of each unmerged region
+        nfa_g: binomial nfa of the merged region
+    Output:
+        node, other, nfa_g: The indices and binomial nfa of the merged region.  nfa_g=-101 if failing merge criteria
+    '''
+    #Define log-probabilities
+    k=[k1,k2]
+    p=[p1,p2]
+    lp1 = np.log(p1)
+    lp2 = np.log(p2)
+    lp0 = np.log(1.-p1-p2)
+    #For runtime efficacy, limit the size of the array and vectorize in chunks
+    splitsize=1000
+    range1 = np.arange(k[0],n-k[1],dtype=int)
+    taillist=[]
+    splitcount = int(np.ceil(len(range1)/splitsize))
+    for range1loc in np.array_split(range1,splitcount):
+        #Determine the number of number of points in the portion of the trinomial tail in this chunk
+        xv,yv = np.meshgrid( range1loc, np.arange(k[1],n-k[0],dtype=float))
+        #Remove invlid indices
+        xv[yv>=n-xv]=-1.
+        data=np.vstack([xv.ravel(),yv.ravel()])
+        xv=None; yv=None #temp free memory 
+        data=data[:,data.min(axis=0)>0.].T
+        #Compute trinomial coefficients using Sterling's approximation (avoid overflow errors)
+        N=float(n)
+        M=data[:,0].astype(float)
+        lcoeff = np.copy(N*np.log(N) - M*np.log(M) - (N-M)*np.log(N-M) + 0.5*(np.log(N)-np.log(M)-np.log(N-M)-np.log(2*np.pi)))
+        N=float(n)-data[:,0]
+        M=data[:,1].astype(float)
+        lcoeff = lcoeff + N*np.log(N) - M*np.log(M) - (N-M)*np.log(N-M) + 0.5*(np.log(N)-np.log(M)-np.log(N-M)-np.log(2*np.pi))
+        #Compute trinomial probabilities for each point in the tail 
+        lprob = data[:,0]*lp1 + data[:,1]*lp2 + (float(n)-data[:,0]-data[:,1])*lp0
+        lprob = lprob + lcoeff
+        #Sum this region of the trinomial tail
+        try:
+            tail = sp.special.logsumexp(lprob)
+            taillist.append(np.copy(tail))
+        except:
+            pass 
+    #Compute the entire trinomial tail 
+    tail = np.vstack(taillist)
+    tail = sp.special.logsumexp(tail)
+    #Determine NFA
+    nfa_gg = -(tail/np.log(10.))-np.log10(Rgg)
+    #Make sure the probability is valid 
+    if np.math.isinf(nfa_gg):
+        nfa_gg=1001.
+    elif np.math.isnan(nfa_gg):
+        print('ISNAN')
+        quit()
+    #Only need to check one merging criteria here (rest in Newlayer function)
+    if  nfa_g >= nfa_gg:  ##merge condition
         return node, other, nfa_g
-    else:
-        #do not merge condition
+    else:#do not merge condition
         return node, other, -101.
 
-
 def newlayer(df_tree,layer,NUMPOINTS,lines,step,numleafs,R,subprocess_count):
-    
-    #make empty layers
+    '''
+    Add a new layer to the hierarchical tree obeying the agglomerative merging criteria in:
+        F. Cao, J. Delon, A. Desolneux, P. Muse, F. Sur (2004) "An A-contrario approach to hierarchical clustering validity assessment", Diss. INRIA
+    Inputs:
+        df_tree: Current hierarchical tree, pandas array
+        layer: integer index indicating this layer of the tree
+        NUMPOINTS: Total size of data set before reducing lines
+        lines: The point features to cluster
+        step: The distance between the finest regions, to check adjacency
+        R: The number of tests, total possible hyperrectangles of the partitioning 
+        subprocess_count: How many parallel process to run in trinomial estimation 
+    Outputs:
+        df_tree: Added column "layer", with each row given a pair ("index, nfa") an index indicating its branch at this layer, and its binomial nfa
+    '''
+    #make empty layer for the new branches
     now = '%d'%layer
     newcount=0 #0 reserved for nanidx
     df_tree[now] = pd.Series([(np.nan,np.nan) for x in range(len(df_tree.index))])
-    #df_tree = df_tree.assign(now=(None,None))
+    #Get data from the last branch 
     last = '%d'%(layer-1) if layer>1 else 'leaf'
     lastlist = df_tree[last].to_list()
     lastlist = np.array(lastlist)[:,0]
     lastlistU = np.unique(lastlist)
-    #numleafs = len(last)
-    #numleafs = len(df_tree)
-    #print(df_tree)
-    #R = len(lastlist) #possible nodes to pari    
-    #R1 = members of i-nodes
-    #R2 = members of i-nodes
     M = NUMPOINTS
-    #for each unique node
-    #print(lastlist)
-    #print(lastlist)
-    #print('lentree',len(df_tree))
-    #quit()
+    #Build a matrix for comparing the leafs at this layer to be agglomeratively merged
     nodecount = len(lastlistU)
     nfamatrix = -101*np.ones((nodecount,nodecount))
-
-    #newlayer_par_call = lambda node, other: newlayer_par(node, other, df_tree, lastlist, numleafs,last, now, lines, R, M)
-    #newlayer_par_call = functools.partial(newlayer_par, df_tree, lastlist, numleafs,last, now, lines, R, M,step)
+    #Define the number of binomial and trinomial tests
     Rg=R; Rgg=R*(R-1)/2;
-    newlayer_par_call = functools.partial(newlayer_par_fast, Rgg, M)
-
+    #Parallelize the trinomial check for merging criteria
+    newlayer_par_call = functools.partial(newlayer_par_fast_compiled, Rgg, M)
     iterable = []
-    oldpossible = 0
     starttime=time.time()
     positives = 0;
     negatives = 0;
+    #Iterate over all node pairs 
     for node in lastlistU:
         for other in lastlistU:
             if other<node:
+                #avoid repetition to save time, triangular array access
                 continue;
             elif node==other: #assign self to list
                 #always merge with self in bad scenarios
@@ -649,18 +453,20 @@ def newlayer(df_tree,layer,NUMPOINTS,lines,step,numleafs,R,subprocess_count):
                 else:
                     negatives=negatives+1
             else:
+                #Get data of the node pair
                 node_tree = df_tree.loc[lastlist==int(node)]
                 node_clusters = node_tree['cluster'].to_list()
                 node_clusters = list(chain.from_iterable(node_clusters))
                 other_tree = df_tree.loc[lastlist==int(other)]
                 other_clusters = other_tree['cluster'].to_list()
                 other_clusters = list(chain.from_iterable(other_clusters))
+                #Get line data of both disjoint clusters and determine closest approach
                 XA = lines[np.asarray(node_clusters).astype('int'), :]
                 XB = lines[np.asarray(other_clusters).astype('int'), :]
                 XAB = sp.spatial.distance.cdist(XA,XB,metric='chebyshev')
                 dAB = np.amin(XAB)
-                oldpossible=oldpossible+1
 
+                #Compute the prior probability and current line density associated with each region
                 nodecubes = len(node_tree)
                 p_node = float(nodecubes)/float(numleafs)
                 k_node = len(node_clusters)
@@ -673,35 +479,43 @@ def newlayer(df_tree,layer,NUMPOINTS,lines,step,numleafs,R,subprocess_count):
                 other_nfa = other_tree[last].to_list()
                 other_nfa = np.array(other_nfa)
                 other_nfa = other_nfa[0,1]
-                #avoid recomputations
 
+                #Apply merging critera
+                #If the regions are adjacent: 
                 if dAB<=step:
+                    #Compute the binomial NFA of the merged region, fairly quick 
                     p = p_node + p_other
                     k = k_node + k_other
-                    Rg=R; Rgg=R*(R-1)/2;
+                    Rg=R; Rgg=R*(R-1)/2;    
                     nfa_g  = ball_nfa(k,M,p,Rg,p*M,M)
-                    #note nfa matrix is already -101 instantiated.
+                    #If the NFA is greater than both ancenstors...
                     if nfa_g>max(node_nfa,other_nfa):
+                        #And the coarse merging critera is passed (to save runtime)...
                         if nfa_g > (-np.log10(.5) + node_nfa + other_nfa):
-                            iterable.append([int(node),int(other),
-                                p_node, k_node,node_nfa,  p_other, k_other, other_nfa,nfa_g])
+                            minpts=min(p_node,p_other)*M
+                            maxpts=M
+                            #And if the two regions are reasonably meaningful...
+                            if k_node>minpts and k_other>=minpts and k_node<=maxpts and k_other<maxpts:
+                                r1 = float(k_node)/float(M)
+                                r2 = float(k_other)/float(M)
+                                if (r1!=1 and r1!=0) and (r2!=1 and r2!=0):#Edge case handling
+                                    #We should then evaluate the trinoial tail to consider if the joint event is meaningful!
+                                    iterable.append([int(node),int(other),
+                                        p_node, k_node,node_nfa,  p_other, k_other, other_nfa,nfa_g])
     
-    #print("EXPLORED POSSIBILITIES: ",len(iterable))
-    #print("WITHOUT ADJACENCY: ",oldpossible)
+
     print("Pos/Neg ratio of last run: %d / %d"%(positives,negatives))
     starttime=time.time()-starttime
-    #print("LOADING TIME: ",starttime)
-
+    print('iterable length:',len(iterable))
+    #Run the parallel process to compute trinomial tails
     if len(iterable)>0:
         starttime=time.time()
         parsteps= min(subprocess_count,len(iterable)) #10 #25
         process_count = min(parsteps,cpu_count())
-        chunks = min(1,int(len(iterable)/process_count))
-        #print("Parstep, process, chunk: ",[parsteps,process_count,chunks])
-        #print("iterable:",iterable)
+        chunks = max(1,int(len(iterable)/process_count))
         with get_context("spawn").Pool(processes=process_count,maxtasksperchild=1) as pool:
             results=pool.starmap(newlayer_par_call,iterable,chunksize=chunks)
-    
+    #Add the parallel results to memmory 
     if len(iterable)>0:
         for r in results:
             try:
@@ -709,19 +523,15 @@ def newlayer(df_tree,layer,NUMPOINTS,lines,step,numleafs,R,subprocess_count):
             except:
                 print('results',results)
                 print('r',r)
-                #print('r[0]',r[0])
-                #print('r[1]',r[1])
-                #print('r[2]',r[2])
                 quit()
 
         starttime=time.time()-starttime
-        #print("RESULT TIME: ",starttime)
 
     newcount=0
     runwhile = True
     #if no off-diagonals, just do diagonal!
     while runwhile:
-
+        #Now, iterate over the matrix and merge PAIRS which have a maximally meaningful NFA 
         idx = np.unravel_index(np.argmax(nfamatrix),nfamatrix.shape)
         nfamax = nfamatrix[idx[0],idx[1]]
         if nfamax>-101: #allow iteration assigning 'singletons'
@@ -736,13 +546,11 @@ def newlayer(df_tree,layer,NUMPOINTS,lines,step,numleafs,R,subprocess_count):
             newcount=newcount+1;
         else:
             runwhile=False
-
-
-    #print('END ADDLAYER')
-    #quit()
+    #Now end, noting that we can at most have halved the total number of regions (merging pairs each layer)
     return df_tree
 
-def associate_lines(goodidxfull, linessave,Xlen, shape, postcluster=1, starfilter=4, densityfilter=0.1, folder='.', name='',spreadcorr=1):
+def associate_lines(goodidxfull, linessave,Xlen, shape, postcluster=1, starfilter=4, densityfilter=0.1, folder='.', name='',spreadcorr=1,
+    returndensity=False,newonly=False):
     '''
     Given x/y coordinates at each z-frame, 
     perform data association to account for temporal aliasing
@@ -772,10 +580,15 @@ def associate_lines(goodidxfull, linessave,Xlen, shape, postcluster=1, starfilte
         numbeforefilter - number of unclustered and unassociated features, for accounting
     '''
 
+    #print('staring agg.py',end=' ',flush=True)
     #Definitions
-    padatafile='padata.txt'
-    paoutfile='paout.txt'
+    #(padatafd,padatafile)=tempfile.mkstemp(suffix='.txt') #'padata.txt'
+    #(paoutfd,paoutfile)=tempfile.mkstemp(suffix='.txt') #'paout.txt'
+    padatafile='%s/padata_%s.txt'%(folder,name)
+    paoutfile='%s/paout_%s.txt'%(folder,name)
+    #print('building vectors',end='...',flush=True)
     aa,bb,cc = shape
+    
   
     #build a list of indexes to the 1st-order list
     tempgoodidxfull2 = np.copy(np.asarray(goodidxfull))
@@ -790,133 +603,192 @@ def associate_lines(goodidxfull, linessave,Xlen, shape, postcluster=1, starfilte
     templinesFiltBackup = np.copy(lines_full2)
     #save the number of unclustered lines before association 
     numbeforefilter = len(goodlinesfull2)
-
+    if numbeforefilter==0:
+        postcluster=0
     #Build a list of [xyz] coordinates (interpolate trajecotry to each xy, or streak midpoints)
+    scaleflag=1.
+    if spreadcorr>0:
+        spreadfactor = max(1., min(aa,bb)/cc)*int(spreadcorr)
+    elif spreadcorr==0:
+        spreadfactor= 1.#/float(cc)
+    else:
+        scaleflag=-1*np.copy(spreadcorr)
+        spreadfactor=1
     if postcluster>0:
-        #Build a list of all input coordinates 
-        objlist = []
-        for z in range(cc):
-            for k in range(len(goodlinesfull2)):
-              locline = goodlinesfull2[k,:6].squeeze()
-              k_len=np.linalg.norm(locline[:3]-locline[3:6])
-              el = np.arccos((locline[2]-locline[5])/k_len)
-              if 1==1: #consier all features
-                  x,y = interp_frame_xy(locline,z,double=True)
-                  if not all(np.array([x,y])==0):
-                      objlist.append([y,x,z])
-        len1 = len(objlist) #Length of all xyz coordinates
-        build_xyzplot(np.asarray(objlist), goodlinesfull2, shape,folder=folder, name='%s_preassociate'%name)
-        
         #Build a list of association-valid coordinates 
         #We reject points which are very close to vertical (pi/8*4=pi/32),
         #   as they should not suffer from temporal aliasing 
         #We will scale the z-axis s.t. data is closer to a unit cube (without scaling xy)
         #   in order to improve seperability, as in whitening. 
         #   XY scaling complicates the coordinate system transforms and is avoided. 
-        spreadfactor = max(1., min(aa,bb)/cc)*int(spreadcorr)
+        
         len2=10000
         starfilter=float(starfilter)
         starangle= 22.5 if starfilter==0 else 22.5/float(starfilter)
         shape2 = [aa,bb,cc*spreadfactor]
-        while starangle<85. and len2>1000:
-            shape2 = [aa,bb,cc*spreadfactor]
-            print('association z-spreadfactor:',spreadfactor)
-            print('starfilter, densityfilter:',[starfilter,densityfilter])
-            objlist = []
-            objlist_unscale=[]
-            for z in range(cc):
-                for k in range(len(goodlinesfull2)):
-                  locline = np.copy(goodlinesfull2[k,:6]).squeeze()
-                  locline[5]=locline[5]*spreadfactor
-                  locline[2]=locline[2]*spreadfactor
-                  #distxy=((locline[0]-locline[3])**2.+(locline[1]-locline[4])**2.)**.5
-                  k_len=np.linalg.norm(locline[:3]-locline[3:6])
-                  el = np.arccos((locline[5]-locline[2])/k_len)
-                  el = el-np.pi if el>np.pi else el
-                  starcond = True if starfilter==0 else ((el*180./np.pi) > starangle)
-                  if starcond: #choose nonvertical
-                      zs=float(z)*spreadfactor
-                      x,y = interp_frame_xy(locline,zs,double=True,shape=shape2)
-                      if not all(np.array([x,y])==0):
-                          objlist.append([y,x,zs])
-                          objlist_unscale.append([y,x,z])
+        try:
+            while starangle<85. and len2>1000:
+                shape2 = [aa,bb,cc*spreadfactor]
+                objlist = []
+                for z in range(cc):
+                    for k in range(len(goodlinesfull2)):
+                        locline = np.copy(goodlinesfull2[k,:6]).squeeze()
+                        locline[5]=locline[5]*spreadfactor
+                        locline[2]=locline[2]*spreadfactor
+                        k_len=np.linalg.norm(locline[:3]-locline[3:6])
+                        el = np.arccos((locline[5]-locline[2])/k_len)
+                        el = el-np.pi if el>np.pi else el
+                        starcond = True if starfilter==0 else ((el*180./np.pi) > starangle)
+                        if starcond: #choose nonvertical
+                            zs=float(z)*spreadfactor
+                            x,y = interp_frame_xy(locline,zs,double=True,shape=shape2)
+                            if not all(np.array([x,y])==0):
+                                #if (x>0) and (x<aa) and (y>0) and (y<bb) and (zs>0) and (zs<int(cc*spreadfactor*scaleflag)):
+                                objlist.append([y,x,zs])
+                                #objlist_unscale.append([y,x,z])
 
-            len2 = len(objlist) #Length of associatable xyz coordates
-            print('We consider %d of %d xyz coordinates for temporal aliasing, angle tol %.2f, spread %.2f'%(len2,len1,starangle, spreadfactor),flush=True)
-            if len2>1000:
-                starangle=starangle+5. if starfilter>0 else 90.
+                len2 = len(objlist) #Length of associatable xyz coordates
+                if len2>1000:
+                    starangle=starangle+5. if starfilter>0 else 90.
+        except Exception as e:
+            print(e)
+            quit()
+
         if len2==0:
-            print('NO VALID TEMPORALLY ALIASED POINTS, STOPPING ASSOCIATION')
+            #print('NO VALID TEMPORALLY ALIASED POINTS, STOPPING ASSOCIATION',flush=True)
             templinesFilt = templinesFiltBackup
             lines = np.copy(templinesFilt)
             postcluster=0
-            quit()
+            if returndensity:
+                raise Exception('stopping association ')
 
+    #If there are still valid points to associate... 
     if postcluster>0:
+        objlist=np.asarray(objlist)
 
         #Run data association using the a-contrario point alignment algorithm
-        painput = np.copy(np.asarray(objlist))
-        print('max ',np.amax(painput,0))
-        print('min ', np.amin(painput,0))
-        print('size ',[aa,bb,cc*spreadfactor])
-        np.savetxt(padatafile,objlist,fmt='%.3f')
-        solve_command='point_alignments_3D %s 0 %d 0 %d 0 %d %s 4'%(padatafile,aa,bb,cc*spreadfactor,paoutfile)
-        solve_result = subprocess.run(solve_command,shell=True)#,
-        if solve_result.returncode:
-            print(solve_result.returncode)
-            print('ERROR: point_alignments_3D NOT FOUND, TRY RUNNING SETUP.SH')
-            quit()
+        #First, update the list to make sure everything is in-bounds 
+        if len(objlist)<=1:
+            postcluster=0
+            if returndensity:
+                raise Exception('Too small to align')
+        else:
+            painput = np.copy(np.asarray(objlist))
+            buffer=1.
+            idxobj1 = (np.floor(objlist[:,1])>buffer) & (np.ceil(objlist[:,1])<float(aa-buffer))
+            idxobj2 = (np.floor(objlist[:,0])>buffer) & (np.ceil(objlist[:,0])<float(bb-buffer))    
+            idxobj3 = (np.floor(objlist[:,2])>buffer) & (np.ceil(objlist[:,2])<np.floor((cc*spreadfactor*scaleflag)-buffer))
+            idxobj = (idxobj1 & idxobj2) & idxobj3
+            if np.count_nonzero(idxobj)==0:
+                postcluster=0
+                if returndensity:
+                    raise Exception('Too small to align')
+            else:
+                objlist = objlist[idxobj,:]
+                try:
+                    np.savetxt(padatafile,objlist,fmt='%.3f')
+                except Exception as e:
+                    print(e)
+                    raise Exception ('unable to write padatafile')
+
+                #Specify timeout critera 
+                #TODO: THIS IS ONLY DESIGNED FOR TACC, should add a flag to disable this on laptops
+                timeoutmin=5 
+                if len(objlist)>=1000:
+                    timeoutmin=5#10
+                elif len(objlist)>=500 and len(objlist)<1000:
+                    timeoutmin=5
+                elif len(objlist)>=10 and len(objlist)<500:
+                    timeoutmin=1#2
+                else:
+                    timeoutmin=1
+                timeoutmin = int(timeoutmin*60)
+                raiseflag=False
+                #Run with timeout capability using Popen instead of run, more reliable
+                try:
+                    solve_command="point_alignments_3D %s 0 %d 0 %d 0 %d %s 4"%(padatafile,bb,aa,int(cc*spreadfactor*scaleflag),paoutfile)
+                    solve_command = solve_command.split(" ")
+                    #solve_result = subprocess.run(solve_command,timeout= timeoutmin)#,
+                    solve_result = subprocess.Popen(solve_command, start_new_session=True)
+                    solve_result.wait(timeout = timeoutmin)
+                except subprocess.TimeoutExpired:
+                    os.killpg(os.getpgid(solve_result.pid),signal.SIGTERM)
+                    print('PTALIGN TIMEOUT')
+                    postcluster=0
+                    raiseflag=True
+                except Exception as e:
+                    print(e)
+                    postcluster=0
+                    raiseflag=True
+                if raiseflag and returndensity:
+                    raise Exception("PTALIGN ERROR")
+                if solve_result.returncode:
+                    print(solve_result.returncode)
+                    print('ERROR: point_alignments_3D NOT FOUND, TRY RUNNING SETUP.SH')
+                    postcluster=0
+                    raiseflag=True
+                    if  returndensity:
+                        raise Exception("point_alignment fails")
+
+    #Load data, handling case of null output
+    if postcluster==0:
+        templinesFilt=[]
+    elif os.stat(paoutfile).st_size==0:
+            templinesFilt=[]
+    else:
         try:
             templinesFilt = np.loadtxt(paoutfile)
         except:
             templinesFilt=[]
 
-        #Account for zero-associated results, and return the input data
-        if len(templinesFilt)==0:
-            build_xyzplot(np.asarray(objlist_unscale),[],shape,folder=folder, name='%s_associate'%name)
-            templinesFilt = templinesFiltBackup
-            postcluster=0
-        else:
-            if templinesFilt.ndim==1:
-                templinesFilt = templinesFilt[np.newaxis,:]
-            templinesFilt[:,2]=templinesFilt[:,2]/spreadfactor
-            templinesFilt[:,5]=templinesFilt[:,5]/spreadfactor
-            lines = np.copy(templinesFilt)
-            paoutput = np.copy(templinesFilt)
+    #Account for zero-associated results, and return the input data
+    if (len(templinesFilt)==0) and (not newonly):
+        templinesFilt = templinesFiltBackup
+        postcluster=0
+    elif (len(templinesFilt)>0):
+        if templinesFilt.ndim==1:
+            templinesFilt = templinesFilt[np.newaxis,:]
+        templinesFilt[:,2]=templinesFilt[:,2]/spreadfactor
+        templinesFilt[:,5]=templinesFilt[:,5]/spreadfactor
+        lines = np.copy(templinesFilt)
+        paoutput = np.copy(templinesFilt)
+    else: #(len(templinesFilt)==0) and (newonly):
+        raise Exception("no alignments and newonly=True.  raising error.  in future, add handling to make extras=all")
 
     #Input data must be normalized to outplut
     lines = np.copy(templinesFilt)
     k_len= np.linalg.norm(lines[:,:3]-lines[:,3:6],axis=1)
+
     #Reject associated lines which are not well-fit (10% diameter-to-length ratio)
+    #TODO: Update default to 0, already ignoring this most of the time 
     if postcluster>0:
         align_diam = np.copy(lines[:,6]).squeeze()
         if align_diam.ndim==0:
             align_diam=np.asarray([align_diam,])
         density = align_diam/k_len
-        print('DENSITY: ',density)
         density_mask = np.asarray(density<densityfilter)
         if densityfilter==0:
             density_mask[:] = 1
         density_count = np.count_nonzero(density_mask)
-        print('valid density (ratio less than threshold) lines: ',density_count)
         #Control filtering and printing
         if density_count==0:
-            build_xyzplot(np.asarray(objlist_unscale),[],shape,folder=folder, name='%s_associate'%name)
+            #build_xyzplot(np.asarray(objlist_unscale),[],shape,folder=folder, name='%s_associate'%name)
             templinesFilt = templinesFiltBackup
             lines = np.copy(templinesFilt)
             postcluster=0
-            print('0 valid density: setting templinesFilt shape',templinesFilt.shape)
         else:
             templinesFilt = templinesFilt[density_mask,:]
             lines = lines[density_mask,:]
             paoutput = paoutput[density_mask,:]
             k_len = k_len[density_mask]
             align_diam = align_diam[density_mask]
-            build_xyzplot(np.asarray(objlist_unscale),lines,shape,folder=folder, name='%s_associate'%name)
+            #build_xyzplot(np.asarray(objlist_unscale),lines,shape,folder=folder, name='%s_associate'%name)
+    else:
+        align_diam = np.asarray([])
 
-        
     #Compute line parameters 
     #lines may be redefined and should be recomputed
+
     k_len= np.linalg.norm(lines[:,:3]-lines[:,3:6],axis=1)
     idx = lines[:,5]<lines[:,2]
     temp = np.copy(lines[idx,:])
@@ -929,59 +801,99 @@ def associate_lines(goodidxfull, linessave,Xlen, shape, postcluster=1, starfilte
     linesNorm = np.copy(np.array([k_len*np.cos(az)*np.sin(el),k_len,lines[:,6],
                 k_len*np.sin(az)*np.sin(el),k_len*np.cos(el),lines[:,-1]]).T)
 
+
     #If still associating, remove lines which are accounded for in an alignment cylinder,
     #   and return all other 'unassociated' lines (inc. stars) for outlier detection.
     #   Use alignment_diameter/2 for radial proximity
     #Otherwise define the input data for return
+    #Isolate original lines that don't touch lines_full_2
     if postcluster>0:
-        fx = len(goodlinesfull2) #input
-        fy = len(lines_full2) #reduced
-        distMat = np.zeros((fx,fy))
-        for i in range(fx):
-            for j in range(fy):
-              dist=np.nan*np.zeros((cc,))
-              for z in range(cc):
-                  locline = goodlinesfull2[i,:6].squeeze()
-                  x1,y1 = interp_frame_xy(locline,z,double=True,extrap=True)
-                  if not all(np.array([x1,y1])==0):
-                      locline = lines_full2[j,:6].squeeze()
-                      x2,y2 = interp_frame_xy(locline,z,double=True,extrap=True)
-                      if not all(np.array([x2,y2])==0):
-                          disti=((x1-x2)**2. + (y1-y2)**2.)**.5
-                          dist[z] = disti if (disti>=align_diam[j]/2.) else 0.
-              distMat[i,j] = np.nanmin(dist)
-        #Mask the assocated lines, either to 1 pixel or cylinder diameter
-        mask=np.asarray(distMat>1.)
-        unmatched= np.asarray(mask.min(axis=1)>0.)
-        matches = np.count_nonzero(distMat<1.)
-        print('num 1-pixel match %d from shape %d/%d'%(matches,fx,fy))
-        extras = goodlinesfull2[unmatched, :]
+        try:
+            goodlinesfull2 = my_filter(goodlinesfull2,shape,skipper=False, buffer=1.)
+            lines_full2 = my_filter(lines_full2,shape,skipper=False, buffer=1.)
+            _,extras = remove_matches_block(goodlinesfull2,lines_full2,cc,diam=align_diam) #must spline
+        except Exception as e:
+            print(e)
+            extras=[]
+        extras = np.asarray(extras)
+        if len(extras)>0:
+            try:
+                if extras.shape[1]==0:
+                    extras=extras.T
+            except Exception as e:
+                print(e)
+        if len(lines_full2):
+            try:
+                if lines_full2.shape[1]==0:
+                    lines_full2=lines_full2.T
+            except Exception as e:
+                print(e)
+        if len(linesNorm):
+            try:
+                if linesNorm.shape[1]==0:
+                    linesNorm=linesNorm.T
+            except Exception as e:
+                print(e)
+
+        #Format data to return 
         if postcluster==1:
-            print('postcluster 1: returning associated and unassociated lines')
-            lines_full2 = np.vstack([lines_full2, extras])
+            if (len(extras)>0) and (not newonly):
+                try:
+                    lines_full2 = np.vstack([lines_full2, extras])
+                except Exception as e:
+                    print(e)
         elif postcluster==2:
-            print('postcluster 2: returning goodlines/badlines')
             lines_full2 = lines_full2 #alias to 'goodlines'
             goodlinesfull2 = extras #alias to 'badlines'
 
-        lines = np.copy(extras)
-        k_len= np.linalg.norm(lines[:,:3]-lines[:,3:6],axis=1)
-        el = np.arccos((lines[:,5]-lines[:,2])/k_len)
-        az = np.arctan2((lines[:,3]-lines[:,0]) , (lines[:,4]-lines[:,1]))
-        extrasNorm = np.array([k_len*np.cos(az)*np.sin(el),k_len,lines[:,6],
-                    k_len*np.sin(az)*np.sin(el),k_len*np.cos(el),lines[:,-1]]).T
-        print('linesNorm shape',linesNorm.shape)
-        print('extrasNorm shape',extrasNorm.shape)
-        templinesFilt = np.vstack([linesNorm, extrasNorm])
+        if len(extras)>0:
+            lines = np.copy(extras)
+            k_len= np.linalg.norm(lines[:,:3]-lines[:,3:6],axis=1)
+            el = np.arccos((lines[:,5]-lines[:,2])/k_len)
+            az = np.arctan2((lines[:,3]-lines[:,0]) , (lines[:,4]-lines[:,1]))
+            try:
+                extrasNorm = np.array([k_len*np.cos(az)*np.sin(el),k_len,lines[:,6],
+                            k_len*np.sin(az)*np.sin(el),k_len*np.cos(el),lines[:,-1]]).T
+            except Exception as e:
+                print(e)
+        else:
+            extrasNorm=np.asarray([])
+   
+        if (len(extrasNorm)>0) and (not newonly):
+            try:
+                templinesFilt = np.vstack([linesNorm, extrasNorm])
+            except Exception as e:
+                print(e)
+        else:
+            templinesFilt = np.copy(linesNorm)
     else:
         templinesFilt = linesNorm
-    print('templinesFilt shape',templinesFilt.shape)
-    print('closing assoc',flush=True)
 
+    #Clean-up
+    try:
+        os.remove(padatafile)
+    except:
+        pass
+    try:
+        os.remove(paoutfile)
+    except:
+        pass
+    if returndensity:
+        return templinesFilt, lines_full2, goodlinesfull2, numbeforefilter,align_diam
     return templinesFilt, lines_full2, goodlinesfull2, numbeforefilter
 
 
 def outlier_alg(templinesFilt, pcanum, xnum, eps, runoutlier=1,name="temp",folder="."):
+    '''
+    Apply a-contrario outlier rejection assuming a gaussian distribution, use mahanalobis distance for a chi-2 NFA model on individual points.
+    Input:
+        templinesFilt: The data to process with run_pca and compute outliers from.  
+        pcanum/xnum: The dimension of input data and the dimension of the PCA outupt
+        runoutlier: A flag to disable processing but return indices
+        name/folder: UNUSED, had been used in plotting for debug
+    Output:
+        goodlines/badlines: the indices of templinesFilt corresponding to meaningful/unmeaningful lines
+    '''
     #Get gaussian fit of data
     if templinesFilt.shape[0]<pcanum:
         print('too few lines to cluster, less than xnum',xnum)
@@ -993,22 +905,20 @@ def outlier_alg(templinesFilt, pcanum, xnum, eps, runoutlier=1,name="temp",folde
         badidxfull = tempgoodidxfull[score_samples<=e2]
         return goodidxfull,badidxfull
     _,XNocluster = run_pca(templinesFilt,templinesFilt,pcanum,xnum)
+    if xnum==2 and pcanum==3:
+        xnum=3
+    if xnum<0:
+        xnum=-xnum
     XFilt =np.copy(XNocluster)
     model = RunBayes(1,np.copy(xnum),np.copy(XFilt),wtype='process')
+
+    #Get the mean and covariance data 
     X = np.copy(XNocluster)
-    predict_proba = model.predict_proba(X)
     score_samples = -model.score_samples(X) / np.log(10)
-    #select rank r<k data
-    predict_proba2 = predict_proba.squeeze()#2[:,weightsort]
-    weights2 = model.weights_.squeeze()#[weightsort]
     means2 = model.means_.squeeze()#[weightsort]
     covar2 = model.covariances_.squeeze()#[weightsort]
-
+    #If full rank, we would rather use the sample mean and covariance
     print('X shape ',X.shape)
-    #print('runbayes mean ',means2)
-    #print('sample mean ',np.mean(X,axis=0))
-    #print('runbayes cov ',covar2)
-    #print('sample cov ',np.cov(X.T))
     if np.linalg.matrix_rank(np.cov(X.T))==X.shape[-1]:
         means2 = np.mean(X,axis=0)
         covar2 = np.cov(X.T)
@@ -1024,52 +934,40 @@ def outlier_alg(templinesFilt, pcanum, xnum, eps, runoutlier=1,name="temp",folde
         covarinv = covarinv.reshape((1,1))
     #initialize memory
     mahan = np.copy(score_samples)
-
     fn,fm = X.shape
     cc = 1.
     crv = stats.chi2(fm)#,scale=1.)
-    #for each line sample...
+
+    #For each line sample, compute the mahanalobis distance and form the NFA using the chi2 tail
     method = 'max'
     for i in range(len(score_samples)):
         mahanrow = ((X[i]-means2).T @  covarinv @ (X[i]-means2))
         mahanrow = cc * mahanrow
         mahan[i] = 1.-crv.cdf(mahanrow)
-
     score_samples = -np.log10(mahan) - np.log10(len(mahan))
 
-
+    #Check for meaningfulness
     e2=np.copy(eps)
     eps=e2 #-log10(nfa)<-log10(e=1)
     if runoutlier==0:
         e2=-np.inf
         eps=-np.inf
         print('disabling outlier detection')
-
-    #print('DISABLING OUTLIERS')
-    #e2=-np.inf
-    #if len(score_samples)>10:
-    #    print(score_samples[:10])
-    #else:
-    #    print(score_samples)
     print('min: %.2f, max: %.2f, eps: %.2f'%(min(score_samples),max(score_samples),eps),flush=True)
-    ######################################################################################
+
+    #Output results
     tempgoodidxfull = np.asarray(range(len(X)))
     goodidxfull = tempgoodidxfull[score_samples>e2]
     badidxfull = tempgoodidxfull[score_samples<=e2]
-
-
     ## PROPOSAL
-    if X.shape[-1]==3:
-        build_xyzplot(X[badidxfull,:],[], [1.,1.,1.], folder=folder, name='%s_outliers'%(name),ptdetect = X[goodidxfull,:])
-
-
-
+    #if X.shape[-1]==3:
+    #    build_xyzplot(X[badidxfull,:],[], [1.,1.,1.], folder=folder, name='%s_outliers'%(name),ptdetect = X[goodidxfull,:])
     return goodidxfull,badidxfull
 
 
      
 def detect_outliers(shape,lines=[],folder='',savename='temp',args=None,
-    stars=0,e2=0,injectScale=0, subprocess_count=10, postcluster=0,runoutlier=1,spreadcorr=1):
+    stars=0,e2=0,injectScale=0, subprocess_count=10, postcluster=0,runoutlier=1,spreadcorr=1,avoidrun=False):
     '''
     Pipeline for NFA outlier detection using PCA/GMM 
     Input: 
@@ -1100,9 +998,19 @@ def detect_outliers(shape,lines=[],folder='',savename='temp',args=None,
 
     #Format lines into proper matrix shape, and 
     lines = format_lines(lines,aa=aa,filt=0)
+    if avoidrun:
+        print('AVOIDING RUNNING CLUSTERING ALG...')
+        goodlines=lines
+        badlines=np.asarray([]).reshape(-1,lines.shape[1])
+        np.save('%s/goodlines_%s.npy'%(folder,savename),goodlines)
+        np.save('%s/badlines_%s.npy'%(folder,savename),badlines)
+        return goodlines,badlines
     eps=np.copy(e2)
     e2=0
     linessave=np.copy(lines)
+    print('initializing clustering, linessave shape:',linessave.shape)
+    linessavefilter = my_filter(linessave,shape,skipper=False, buffer=1.)
+    print('initializing clustering, filtered shape:',linessavefilter.shape)
     #Outlier detection only viable if there exist a 
     # statistically meaninful number of events 
 
@@ -1201,7 +1109,7 @@ def detect_outliers(shape,lines=[],folder='',savename='temp',args=None,
     counter = 0;     
     NUMPOINTSPRE = np.copy(len(templinesFilt))
 
-
+    nparts=0 
     while runacclust==1:
         counter+=1;
 
@@ -1223,48 +1131,54 @@ def detect_outliers(shape,lines=[],folder='',savename='temp',args=None,
             injectLines = np.random.uniform(size=(injectNew, dims));
             XNocluster = np.concatenate((XNocluster,injectLines),axis=0)     
 
-        #print('\n\nInjectScale',injectScale)
-        #print('xshape',XNocluster.shape)
-        #print('rang0:',[np.amin(XNocluster[:,0]),np.amax(XNocluster[:,0])])
-        #print('rang1:',[np.amin(XNocluster[:,1]),np.amax(XNocluster[:,1])])
-        #print('rang2:',[np.amin(XNocluster[:,2]),np.amax(XNocluster[:,2])])
         layer = 0
         #DATA REPROJECTION REDUCES NUM POINTS BUT NOT NUM TESTS
         NUMPOINTS = np.copy(len(XNocluster))
 
-        nparts = 100
-        '''
-        dStore = np.empty((len(XNocluster),len(XNocluster)))
-        dStore[:] = np.nan
-        for i in range(len(XNocluster)-1):
-            for j in range(i+1,len(XNocluster)):
-                dStore[i,j]=np.linalg.norm(XNocluster[i,:]-XNocluster[j,:],np.inf)
-        #NOTE: ADDING NOISE INCREASES MEDIAN SUBSTANTIALLY
-        # SINCE THE CLUSTERED POINTS HAVE A SURPRISINGLY SMALL SEPARATION
-        #  COMPARED TO THE NOISE POINTS, WHICH HAVE NECESSARILY WIDER SPACEING                
+        ## DETERMINE THE NUMBER OF PARITIONS TO USE 
+        #Defaults s.t. each partition contains 1 point in Expectation under a uniform independent model 
+        #nparts = 100
+        d = .01
+        if nparts==0:
+            if False:
+                #'''
+                #THIS CAN BE A MASSIVE IMAGE
+                #dStore = np.empty((len(XNocluster),len(XNocluster)))
+                #dStore[:] = np.nan
+                print('Starting smart Dstore',flush=True)
+                dStore = np.zeros((len(XNocluster),))
+                dTemp = np.ones((len(XNocluster),))
+                for i in range(len(XNocluster)-1):
+                    dTemp[:]=1
+                    for j in range(i+1,len(XNocluster)):
+                        #dStore[i,j]=np.linalg.norm(XNocluster[i,:]-XNocluster[j,:],np.inf)
+                        dTemp[j]=np.linalg.norm(XNocluster[i,:]-XNocluster[j,:],np.inf)
+                    dStore[i] = np.nanmin(dTemp)
+                #NOTE: ADDING NOISE INCREASES MEDIAN SUBSTANTIALLY
+                # SINCE THE CLUSTERED POINTS HAVE A SURPRISINGLY SMALL SEPARATION
+                #  COMPARED TO THE NOISE POINTS, WHICH HAVE NECESSARILY WIDER SPACEING                
 
-        dStore = np.nanmin(dStore[:,1:],axis=0) #nearest neightbor distances
-        dStore = dStore[dStore>0]
-        d = np.nanmedian(dStore) #*2. #increase to let be convex
-        print('Dmedina:',d)
-        d = np.nanmean(dStore) #*2. #increase to let be convex
-        print('Dmean:',d)
-        dstd = np.nanstd(dStore) #*2. #increase to let be convex
-        print('Dstd:',dstd)
-        print('D_numroot',1./NUMPOINTS**(1/3.))
-        d=d+3.*dstd;#seems ~~dnumroot for starlink AND navstar!
-        print('D3std:',d)
-        '''
-        d=(1./NUMPOINTS)**(1/dims)
+                #dStore = np.nanmin(dStore[:,1:],axis=0) #nearest neightbor distances
+                dStore = dStore[dStore>0]
+                d = np.nanmedian(dStore) #*2. #increase to let be convex
+                print('Dmedina:',d)
+                d = np.nanmean(dStore) #*2. #increase to let be convex
+                print('Dmean:',d)
+                dstd = np.nanstd(dStore) #*2. #increase to let be convex
+                print('Dstd:',dstd)
+                print('D_numroot',1./NUMPOINTS**(1/3.))
+                print('nparts =', int(np.ceil(NUMPOINTS**(1/3.))))
+                d=d+3.*dstd;#seems ~~dnumroot for starlink AND navstar!
+                print('D3std:',d)
+                print('nparts =', int(np.ceil(1./d)))
+                #'''
+            else:
+                d=(1./NUMPOINTS)**(1/dims)
+            nparts = int(np.ceil(1./d))
 
-
-
-        nparts = int(np.ceil(1./d))
-        #nparts=10
-        #print('NPARTS:',nparts)
-        XNocluster = np.copy(XNoclusterCopy)
-        #quit()
-        #nparts=10            
+        #RUN AGGLOMERATIVE HIERARCHICAL CLUSTERING
+        print('NPARTS:',nparts)
+        XNocluster = np.copy(XNoclusterCopy)       
         R = (nparts*(nparts+1)/2)**dims
         df_tree,XNocores = makeinit(XNocluster, R, nparts, dims,NUMPOINTSPRE)
         runlayer=1
@@ -1286,12 +1200,10 @@ def detect_outliers(shape,lines=[],folder='',savename='temp',args=None,
             nowlist = np.array(nowlist)[:,0]
             nowlistU = np.unique(nowlist)
 
-            #print('numreg: last %d, now %d'%(len(lastlistU),len(nowlistU)))
             runlayer = 1 if len(nowlistU)<len(lastlistU) else 0
             print('layertime', time.time() - start)
 
         print('alltime', time.time() - allstart)
-        #quit()
             
         if injectScale>0:
             XNocluster = XNocluster[:injectLimit,:]
@@ -1300,20 +1212,16 @@ def detect_outliers(shape,lines=[],folder='',savename='temp',args=None,
         balllist = []
         radiuslist = []
         nfalist = []
-        for node in nowlistU:
 
+        #Gather the data from the clustering tree
+        for node in nowlistU:
             node_tree = df_tree.loc[nowlist==int(node)]
             node_clusters = node_tree['cluster'].to_list()
             node_clusters = list(chain.from_iterable(node_clusters))
-
             ## REMOVE NOISE INJECTION
             node_clusters = np.asarray(node_clusters)
-            #print('NODESTART:',len(node_clusters))
             if injectScale>0:
                 node_clusters = node_clusters[node_clusters<injectLimit]
-            #print('NODETRIM:',len(node_clusters))
-
-
 
             node_nfa = node_tree[now].to_list()
             node_nfa = np.array(node_nfa)
@@ -1326,6 +1234,8 @@ def detect_outliers(shape,lines=[],folder='',savename='temp',args=None,
             balllist.append(node_clusters)
             radiuslist.append(len(node_tree))
             nfalist.append(node_nfa)
+        
+        #Build  anew tree containing only the maximally meaningful roots, for ease of access
         store = pd.DataFrame(
             {'core': pt1list, 'cluster': balllist, 
             'radius': radiuslist ,   'nfa': nfalist},
@@ -1367,10 +1277,8 @@ def detect_outliers(shape,lines=[],folder='',savename='temp',args=None,
             templinesFilt = templinesFilt[~clustmask,:]
             print('cluster size B: ', np.count_nonzero(clustmask))
             ## PROPOSAL
-            build_xyzplot(XNocluster,[], [1,1,1], folder=folder, name='%s_cluster%d'%(savename,counter),ptdetect = XCluster)
+            #build_xyzplot(XNocluster,[], [1,1,1], folder=folder, name='%s_cluster%d'%(savename,counter),ptdetect = XCluster)
 
-            #print('REPROJECTION DISABLED!')
-            #runacclust = 0
         else:
             runacclust=0
         if len(XNocluster)<=1:
@@ -1378,16 +1286,15 @@ def detect_outliers(shape,lines=[],folder='',savename='temp',args=None,
 
     #Data Association prior to outlier detection (for temporal aliasing)
     print('PREASSOC SIZE',templinesFilt.shape)
-    if runoutlier==1:
-        starfilter=4
-        densityfilter=0.1
-    else:
-        starfilter=4
-        densityfilter=0
-
-
     #Data Association prior to outlier detection (for temporal aliasing)
+    print('input shape to assoc.:',shape)
+    print('before assoc, linessave shape:',linessave.shape)
+    linessavefilter = my_filter(linessave,shape,skipper=False,buffer=1.)
+    print('before assoc, filtered shape:',linessavefilter.shape)
     templinesFilt,lines_full2,goodlinesfull2,numbeforefilter = associate_lines(goodidxfull,linessave,len(XFull),shape,postcluster,folder=folder,name=savename,spreadcorr=spreadcorr)
+    print('after assoc, lines_full2 shape:',lines_full2.shape)
+    linessavefilter = my_filter(lines_full2,shape,skipper=False,buffer=1.)
+    print('after assoc, filtered shape:',linessavefilter.shape)
     #the goodlines are fine... we just need to actually print the right "badlines"
     assocParam = templinesFilt
     assocLines = lines_full2
@@ -1396,9 +1303,7 @@ def detect_outliers(shape,lines=[],folder='',savename='temp',args=None,
     print('POSTASSOC SIZE',templinesFilt.shape)
     #clustering only the remainders... goodidxfull should be in relation to...
     #will lose earlier bad lines either way!!!
-
     goodidxfull,_ = outlier_alg(templinesFilt, pcanum, xnum, eps, runoutlier,name=savename,folder=folder)
-
     print('first goodidxfull',len(goodidxfull))
 
     #CORRECTION: GOODLINES IS "joined", BADLINES is "REJECTED"
@@ -1446,7 +1351,7 @@ def detect_outliers(shape,lines=[],folder='',savename='temp',args=None,
     CLUST2idxfull = CLUST2idxfull2==1
     CLUST3idxfull = CLUST3idxfull2==1
     CLUSTXidxfull = CLUSTXidxfull2==1
-    CLUSTALLidx   = CLUST1idxfull | CLUST2idxfull | CLUST3idxfull | CLUSTXidxfull
+    CLUSTALLidx   = ((CLUST1idxfull | CLUST2idxfull) | CLUST3idxfull) | CLUSTXidxfull
 
     badlinesfull = np.vstack((lines_full[CLUSTALLidx], badlinesfull))
     print('Total lines: %d, Unclustered %d, Grouped %d, Accepted: %d, Rejected: %d'%(len(lines_full), numbeforefilter, len(lines_full2),
@@ -1467,138 +1372,6 @@ def detect_outliers(shape,lines=[],folder='',savename='temp',args=None,
     np.save('%s/REMAINALL_%s.npy'%(folder,savename),REMAINALLlinesfull)
     np.save('%s/OUTLIER_%s.npy'%(folder,savename),OUTLIERlinesfull)
     ######################################################################################
-
-    '''
-    #Compare NFA to threshold 
-    tempgoodidxfull = np.copy(np.asarray(goodidxfull))
-    goodidxfull = tempgoodidxfull[score_samples>e2]
-    badidxfull = tempgoodidxfull[score_samples<=e2]
-
-    print('Xshape,',X.shape)
-    print('scireshape,',score_samples.shape)
-
-    saveoutlier  = np.copy(X[score_samples>e2])
-    saveremain = np.copy(X[score_samples<=e2])
-
-    tempgoodidxfull = np.copy(np.asarray(goodidxfull))
-    goodidxfull = np.zeros((len(XFull)))
-    CLUST1idxfull2 = np.zeros((len(XFull)))
-    CLUST2idxfull2 = np.zeros((len(XFull)))
-    CLUST3idxfull2 = np.zeros((len(XFull)))
-    CLUSTXidxfull2 = np.zeros((len(XFull)))
-    REMAINidxfull2 = np.zeros((len(XFull)))
-    OUTLIERidxfull2 = np.zeros((len(XFull)))
-
-    CLUST1idxfull = np.asarray(CLUST1idxfull.flatten(),dtype=int)
-    CLUST2idxfull = np.asarray(CLUST2idxfull.flatten(),dtype=int)
-    CLUST3idxfull = np.asarray(CLUST3idxfull.flatten(),dtype=int)
-    CLUSTXidxfull = np.asarray(CLUSTXidxfull.flatten(),dtype=int)
-
-    goodidxfull[tempgoodidxfull]=1
-    CLUST1idxfull2[CLUST1idxfull]=1
-    CLUST2idxfull2[CLUST2idxfull]=1
-    CLUST3idxfull2[CLUST3idxfull]=1
-    CLUSTXidxfull2[CLUSTXidxfull]=1
-    REMAINidxfull2[badidxfull]=1
-    OUTLIERidxfull2[tempgoodidxfull]=1
-
-    goodidxfull = goodidxfull==1
-    CLUST1idxfull = CLUST1idxfull2==1
-    CLUST2idxfull = CLUST2idxfull2==1
-    CLUST3idxfull = CLUST3idxfull2==1
-    CLUSTXidxfull = CLUSTXidxfull2==1
-    REMAINidxfull = REMAINidxfull2==1
-    OUTLIERidxfull = OUTLIERidxfull2==1
-    #tempgbadidxfull = np.copy(np.asarray(badidxfull))
-    badidxfull = ~goodidxfull
-    
-    lines_full = np.copy(linessave)
-    goodlinesfull = lines_full[goodidxfull]
-    badlinesfull = lines_full[badidxfull]
-   
-    print('Total lines: %d, Accepted: %d, Rejected: %d'%(len(lines_full), 
-        np.count_nonzero(goodidxfull),np.count_nonzero(badidxfull) ))
-    '''
-    '''
-    print('Accepted:')
-    print(goodlinesfull)
-    print('Rejected:')
-    print(badlinesfull[:10,:] )
-    Xgood= XFull[goodidxfull,:]
-    Xbad = XFull[badidxfull,:]
-    print('Accepted:')
-    print(Xgood)
-    print('Rejected:')
-    print(Xbad[:10,:] )
-    '''
-    '''
-    np.save('%s/goodlines_%s.npy'%(folder,savename),goodlinesfull)
-    np.save('%s/badlines_%s.npy'%(folder,savename),badlinesfull)
-    
-    np.save('%s/CLUST1_%s.npy'%(folder,savename),lines_full[CLUST1idxfull])
-    np.save('%s/CLUST2_%s.npy'%(folder,savename),lines_full[CLUST2idxfull])
-    np.save('%s/CLUST3_%s.npy'%(folder,savename),lines_full[CLUST3idxfull])
-    np.save('%s/CLUSTX_%s.npy'%(folder,savename),lines_full[CLUSTXidxfull])
-    np.save('%s/REMAIN_%s.npy'%(folder,savename),lines_full[REMAINidxfull])
-    np.save('%s/OUTLIER_%s.npy'%(folder,savename),lines_full[OUTLIERidxfull])
-    '''
-    
-
-    '''
-    viridis_seed = np.array([np.linspace(1,255,num=5)]).astype(np.uint8)
-    viridis_list = cv2.applyColorMap(viridis_seed,cv2.COLORMAP_VIRIDIS)[0]
-    #print('list0')
-    #print(viridis_list)
-    viridis_list = np.asarray(viridis_list)[:,::-1]/255
-    #print('list1')
-    #print(viridis_list)
-
-    
-    plt.figure()
-    plt.subplot(1,2,1) #clusters + remainders
-    templinesFilt = np.copy(linesNorm)
-    _,X = run_pca(templinesFilt,templinesFilt,pcanum,xnum)        
-    vl = viridis_list[0]
-    plt.scatter(x=X[REMAINidxfull,0],y=X[REMAINidxfull,1],color=(vl[0],vl[1],vl[2]))
-    plt.scatter(x=X[OUTLIERidxfull,0],y=X[OUTLIERidxfull,1],color=(vl[0],vl[1],vl[2]))
-    vl = viridis_list[1]
-    plt.scatter(x=X[CLUSTXidxfull,0],y=X[CLUSTXidxfull,1],color=(vl[0],vl[1],vl[2]))
-    vl = viridis_list[2]
-    plt.scatter(x=X[CLUST3idxfull,0],y=X[CLUST3idxfull,1],color=(vl[0],vl[1],vl[2]))
-    vl = viridis_list[3]
-    plt.scatter(x=X[CLUST2idxfull,0],y=X[CLUST2idxfull,1],color=(vl[0],vl[1],vl[2]))
-    vl = viridis_list[4]
-    plt.scatter(x=X[CLUST1idxfull,0],y=X[CLUST1idxfull,1],color=(vl[0],vl[1],vl[2]))
-    plt.title("Meaningful Clusters \n 1st projection")
-    plt.subplot(1,2,2) #remainders + outliers
-    plt.scatter(x=saveremain[:,0],y=saveremain[:,1],color=(vl[0],vl[1],vl[2]))
-    plt.scatter(x=saveoutlier[:,0],y=saveoutlier[:,1],c='r')
-    plt.title("Meaningful Outliers")
-  
-    fig=plt.figure()
-    ax = fig.add_subplot(1,2,1,projection='3d') #clusters + remainders
-    templinesFilt = np.copy(linesNorm)
-    _,X = run_pca(templinesFilt,templinesFilt,pcanum,xnum)        
-    vl = viridis_list[0]
-    plt.scatter(X[REMAINidxfull,0],X[REMAINidxfull,1],X[REMAINidxfull,2],color=(vl[0],vl[1],vl[2]))
-    plt.scatter(X[OUTLIERidxfull,0],X[OUTLIERidxfull,1],X[OUTLIERidxfull,2],color=(vl[0],vl[1],vl[2]))
-    vl = viridis_list[1]
-    plt.scatter(X[CLUSTXidxfull,0],X[CLUSTXidxfull,1],X[CLUSTXidxfull,2],color=(vl[0],vl[1],vl[2]))
-    vl = viridis_list[2]
-    plt.scatter(X[CLUST3idxfull,0],X[CLUST3idxfull,1],X[CLUST3idxfull,2],color=(vl[0],vl[1],vl[2]))
-    vl = viridis_list[3]
-    plt.scatter(X[CLUST2idxfull,0],X[CLUST2idxfull,1],X[CLUST2idxfull,2],color=(vl[0],vl[1],vl[2]))
-    vl = viridis_list[4]
-    plt.scatter(X[CLUST1idxfull,0],X[CLUST1idxfull,1],X[CLUST1idxfull,2],color=(vl[0],vl[1],vl[2]))
-    ax.set_title("Meaningful Clusters \n 1st projection")
-    ax=fig.add_subplot(1,2,2,projection='3d') #remainders + outliers
-    plt.scatter(saveremain[:,0],saveremain[:,1],saveremain[:,2],color=(vl[0],vl[1],vl[2]))
-    plt.scatter(saveoutlier[:,0],saveoutlier[:,1],saveoutlier[:,2],c='r')
-    ax.set_title("Meaningful Outliers")
-    plt.savefig("TESTCLUSTER3D.png")
-    plt.close()     
-    '''
-
 
 
     print('Done!\n\n')

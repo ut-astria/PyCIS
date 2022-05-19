@@ -3,13 +3,10 @@ PyCIS - Python Computational Inference from Structure
 
 pylib/import_fits.py: Import and format FITS data and correct headers
 
-TODO:
-    Add capactiy to read .fits/fit.zip compressed files directly for ASTRIANet pipeline
-
 Benjamin Feuge-Miller: benjamin.g.miller@utexas.edu
 The University of Texas at Austin, 
 Oden Institute Computational Astronautical Sciences and Technologies (CAST) group
-Date of Modification: February 16, 2022
+Date of Modification: May 03, 2022
 
 --------------------------------------------------------------------
 PyCIS: An a-contrario detection algorithm for space object tracking from optical time-series telescope data. 
@@ -34,12 +31,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 import os
 import glob
 import numpy as np
-import cv2
 from astropy.io import fits
 import array
 import imageio
-
-from scipy.ndimage.filters import convolve as spconv
 
 def update_key(hdr,key):
     '''
@@ -138,13 +132,13 @@ def mod_fits(input_dir, headers, folder='', subsample=1, framerange=[-1,-1]):
             hdr = headers[imnum-firstframe]
             fits.writeto(outfits,data,hdr,overwrite=True, output_verify="ignore")
 
-def import_fits(input_dir, savedata=0, subsample=1, framerange=[-1,-1], scale = 1, printheader=0,gauss=[1,1],median=0,shift=0,sig=0,binfactor=1):
+def import_fits(input_dir, savedata=0, subsample=1, framerange=[-1,-1], scale = 1, printheader=0,gauss=[1,1],median=0,shift=0,sig=0,binfactor=1,skip=False,
+    bigmedian=0,bigmedianimg=0,minimg=np.inf,returnsize=False):
     '''
     Import fits files and either save or pass to main function 
     Returns images as a 3D numpy array and a list of FITS headers
     '''
     
-
     #specify pathing
     datatype='fit'
 
@@ -157,10 +151,16 @@ def import_fits(input_dir, savedata=0, subsample=1, framerange=[-1,-1], scale = 
         imlist =  sorted(glob.glob('%s/*.%s'%(input_dir,datatype)))
         listlen = len(imlist)
         if listlen==0: 
-            print('NO FIT OR FITS FILES, CHANGE DATATYPE')
-            quit()
+            #print('NO FIT OR FITS FILES...')
+            #quit()
+            datatype='fit.zip'
+            imlist =  sorted(glob.glob('%s/*.%s'%(input_dir,datatype)))
+            listlen = len(imlist)
+            if listlen==0: 
+                print('NO FIT.ZIP FILES, CHANGE DATATYPE')
+                quit()
     #print(imlist)
-
+    fullsizeZ = np.copy(listlen)
     #filter input frame range for subsample
     firstframe = max(framerange[0],0)
     lastframe = min(framerange[1],listlen)
@@ -171,10 +171,12 @@ def import_fits(input_dir, savedata=0, subsample=1, framerange=[-1,-1], scale = 
 
     #Run video maker
     headerflag=0
-    print('Importing %d of %d ...'%(lastframe-firstframe+1,listlen))
+    #print('Importing %d of %d ...'%(lastframe-firstframe+1,listlen))
     for imnum, infits in enumerate(imlist):
         #optional reduced frame subsampling
         if (subsample==1) and (imnum<firstframe or imnum>lastframe): 
+            if not skip:
+                pass#print('_%d_'%(imnum),end=', ',flush=True)
             continue 
         #open frame
         #printheader=1
@@ -187,21 +189,24 @@ def import_fits(input_dir, savedata=0, subsample=1, framerange=[-1,-1], scale = 
 
                 headerflag=0; printheader=1;
                 printheader=0;
+                #printheader=1;
                 if printheader==1 and headerflag==0:
                     headerflag=1
                     for entry in hdr:
                         print(entry,hdr[entry],hdr.comments[entry])
                     #print(hdr.info())
                     quit()
-                print('%d'%(imnum-firstframe),end=', ',flush=True)
+                #print('%d'%(imnum-firstframe),end=', ',flush=True)
+                #print('%d'%(imnum),end=', ',flush=True)
                 subs = hdul[0].data
+                if skip:
+                    subs=np.zeros((2,2))
                 
                 #format data for pycis
                 subs = subs.astype(np.float64).squeeze()
                 
                 if subs.ndim==3: #TIME SERIES IN SINGLE FIGTS
                     #UNCOMMENT TO SHIFT DATA
-                    #print("SHIFTING DATA")
                     a1 = int(((1.-scale) * subs.shape[1])/2.)
                     a2 = subs.shape[1] - a1
                     b1 = int(((1.-scale) * subs.shape[2])/2.)
@@ -224,23 +229,21 @@ def import_fits(input_dir, savedata=0, subsample=1, framerange=[-1,-1], scale = 
                         #    #print(hdr.info())
                         #if i==len(subs)-1:
                         #    quit()
-                        if  1==1: #i<5:
-                            print('%d'%i,end=', ',flush=True)
-                            ic=0#shift; #SET TO 2 TO SHIFT DATA 
-                            ik = int(ic*i)
-                            subsB = subs[i,a1:a2,b1-ik:b2-ik].squeeze()
-                        
-                            if binfactor>1:
-                                if (subsB.shape[0]%binfactor) > 0: 
-                                    subsB = subsB[:-int(subsB.shape[0]%binfactor),:]
-                                if (subsB.shape[1]%binfactor) > 0: 
-                                    subsB = subsB[:,:-int(subsB.shape[1]%binfactor)]
-                                nx = subsB.shape[0] // binfactor
-                                ny = subsB.shape[1] // binfactor
-                                subsB = subsB.reshape(nx,binfactor,ny,binfactor).sum(3).sum(1)
-                            sub = subsB
-                            frames.append(sub)
-                            headers.append(hdr)
+                        print('%d'%i,end=', ',flush=True)
+                        ic=0#shift; #SET TO 2 TO SHIFT DATA 
+                        ik = int(ic*i)
+                        subsB = subs[i,a1:a2,b1-ik:b2-ik].squeeze()
+                        if binfactor>1:
+                            if (subsB.shape[0]%binfactor) > 0: 
+                                subsB = subsB[:-int(subsB.shape[0]%binfactor),:]
+                            if (subsB.shape[1]%binfactor) > 0: 
+                                subsB = subsB[:,:-int(subsB.shape[1]%binfactor)]
+                            nx = subsB.shape[0] // binfactor
+                            ny = subsB.shape[1] // binfactor
+                            subsB = subsB.reshape(nx,binfactor,ny,binfactor).sum(3).sum(1)
+                        sub = subsB
+                        frames.append(sub)
+                        headers.append(hdr)
                     subs=np.asarray(frames)
                     frames=subs
 
@@ -250,7 +253,6 @@ def import_fits(input_dir, savedata=0, subsample=1, framerange=[-1,-1], scale = 
                     a2 = subs.shape[0] - a1
                     b1 = int(((1.-scale) * subs.shape[1])/2.)
                     b2 = subs.shape[1] - b1
-                    #subs = subs[a1:a2,b1:b2]
                     subsB = subs[a1:a2,b1:b2]
                     if binfactor>1:
                         if (subsB.shape[0]%binfactor) > 0: 
@@ -260,72 +262,70 @@ def import_fits(input_dir, savedata=0, subsample=1, framerange=[-1,-1], scale = 
                         nx = subsB.shape[0] // binfactor
                         ny = subsB.shape[1] // binfactor
                         subsB = subsB.reshape(nx,binfactor,ny,binfactor).sum(3).sum(1)
-                    #sub = subsB
-                    #frames.append(subs)
                     frames.append(subsB)
         except Exception as e:
             print(e)
-    ## PRINT STATS
+   
     frames = np.array(frames).squeeze()
-    #print('shape: ',np.shape(np.array(frames)))
-    mean = np.mean(frames)
-    dev = np.std(frames)
-    #print('stats (mean,std,min,max): ', (mean, dev, frames.min(), frames.max()))
-    mx =  frames.max()
-    #print('max ',mx)
+    
     
     # Error capture for single frame
-
-    if frames.ndim==2:
-        print('\nReturning single-frame image...')
+    if skip or (frames.ndim==2):
+        #print('\nReturning single-frame image...')
         return frames, headers
-        #frames=np.array([frames,frames])
 
     #Median-subtract if requested (off by default)
     if median==1:
-        print('MEDIAN PROCESSING')
-        meanframe = np.median(frames,axis=0)
-        for frame in range(0,frames.shape[0]):
-            frames[frame,:,:] = np.abs(frames[frame,:,:]- meanframe)
-    #frames *=-1
-    frames = frames - np.amin(frames)+1
-
+        if bigmedian==0: #Compute the median over all frames
+            meanframe = np.median(frames,axis=0)
+        else: #Use the provided median image 
+            meanframe = np.asarray(bigmedianimg)
+        frames = frames - meanframe[np.newaxis,:,:]
+    #minimg may be nan (compute for bigmedian solution and skip), inf (apply local min), or scalar 
+    printminimg=0
+    frames=np.asarray(frames)
+    if np.isnan(minimg):#Find the median over all median-subtracted data
+        printminimg=1
+        minimg = np.amin(frames-np.median(frames,axis=0)[np.newaxis,:,:])
+        print('NEWminimg:',minimg)
+    elif np.isinf(minimg):#Set the minimum of each frame to 1
+        frames = frames - np.amin(frames) +1
+    else:#Use the provided minimum correction (ie, over all windows)
+        frames = frames - minimg +1
+    
     if not (shift==0):
-        print('SHIFT PROCESSING')
+        #print('SHIFT PROCESSING')
         ic=shift; #SET TO 2 TO SHIFT DATA
         maxshift = np.abs(int(len(frames)*ic))+1
         shiftframes = np.copy(frames[:,:,:-(maxshift)])
-        #print('shiftsize',shiftframes.shape)
         for i in range(len(frames)):
-            #shiftframes[i,:,:] = frames[i,:,ik:ik-maxshift].squeeze()
             if shift>0:
                 ik = int(ic*i)+1
                 shiftframes[i,:,:] = frames[i,:,maxshift-ik:-ik].squeeze()
             else:
                 ik = int(ic*i)-1
-                #print([-ik,maxshift+ik])
                 shiftframes[i,:,:] = frames[i,:,-ik:-(maxshift+ik)].squeeze()
         frames = shiftframes
 
     if sig>0:
-        print('SIG PROCESSING')
+        #print('SIG PROCESSING')
         mean = np.mean(frames)
         div = np.std(frames)
-        #test1 = (mean-frames.min()) / div
-        #test2 = (frames.max()-mean) / div
-        #print('SIGRANGE: ',[test1,test2])
-        #quit()
         frames = np.clip(frames, 0, mean+sig*div)
-    mean = np.mean(frames)
-    dev = np.std(frames)
-    print('stats: ', (mean, dev, frames.min(), frames.max()))
+
     ## SAVE DATA
     if savedata==1:
         print('\nSaving image data...')
         np.save('%s/datacube.npy'%(input_dir),frames)
         print('Image data successfully saved!\n\n')
     else:
-        print('\nReturning image...')
+        #print('Returning image...',flush=True)
+        if printminimg==1:
+            return frames,headers,minimg
+        if returnsize:
+            fullsize = (frames.shape[1],frames.shape[2],fullsizeZ)
+            #fullsize = (frames.shape[1],frames.shape[2],1)#fullsizeZ)
+            return frames,headers,fullsize
         return frames, headers
 
 

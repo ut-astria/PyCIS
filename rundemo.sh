@@ -61,7 +61,7 @@ source env/bin/activate
 #set omp and run demo with faulthandler
 export OMP_NUM_THREADS=48
 python3 -q -X faulthandler demo.py
-python3 -q -X faulthandler runpycis.py -i $COPYLOC -s $FOLDER -o $OUTLOC/$FOLDER
+python3 -q -X faulthandler runpycis.py -i $COPYLOC -s $FOLDER -o $OUTLOC/$FOLDER -t $TDMLOC
 #close source for safe exit
 deactivate
 
@@ -70,7 +70,7 @@ else
 echo "launching through slurm"
 #reset paths
 module load gcc/9.1
-module load cmake/3.10.2
+module load cmake/3.16.1 #.10.2
 module load python3/3.8.2
 if ! which "solve-field" >& /dev/null ; then
 echo "resetting paths"
@@ -99,7 +99,7 @@ source env/bin/activate
 
 #set omp and run demo with faulthandler
 export OMP_NUM_THREADS=48
-python3 -q -X faulthandler runpycis.py -i $COPYLOC -s $FOLDER -o $OUTLOC/$FOLDER
+python3 -q -X faulthandler runpycis.py -i $COPYLOC -s $FOLDER -o $OUTLOC/$FOLDER -t $TDMLOC
 
 #close source for safe exit
 deactivate

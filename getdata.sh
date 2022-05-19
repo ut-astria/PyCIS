@@ -9,15 +9,15 @@ if [ ! -d "data" ]; then
 fi
 CWD=$(pwd)
 #FOLDER="20201224_26407_navstar-48"
-LOC="data/20201220_45696_starlink-1422"
-if [ ! -d "${LOC}" ]; then
-    mkdir "${LOC}"
-    cd "${LOC}"
-    wget -c https://dataverse.tdl.org/api/access/datafile/123198 -O temp.tar.gz
-    tar -zxf temp.tar.gz --strip-components=1
-    rm -rf temp.tar.gz
-    cd $CWD
-fi
+#LOC="data/20201220_45696_starlink-1422"
+#if [ ! -d "${LOC}" ]; then
+#    mkdir "${LOC}"
+#    cd "${LOC}"
+#    wget -c https://dataverse.tdl.org/api/access/datafile/123198 -O temp.tar.gz
+#    tar -zxf temp.tar.gz --strip-components=1
+#    rm -rf temp.tar.gz
+#   cd $CWD
+#fi
 LOC="data/20201224_26407_navstar-48"
 if [ ! -d "${LOC}" ]; then
     mkdir "${LOC}"

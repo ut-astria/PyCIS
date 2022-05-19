@@ -6,6 +6,11 @@
 #TODO: 
 #new get-data script to read any new folder not in some record.log file 
 #
+#Benjamin Feuge-Miller: benjamin.g.miller@utexas.edu
+#The University of Texas at Austin, 
+#Oden Institute Computational Astronautical Sciences and Technologies (CAST) group
+#Date of Modification: May 5, 2022
+#
 #--------------------------------------------------------------------
 #PyCIS: An a-contrario detection algorithm for space object tracking from optical time-series telescope data. 
 #Copyright (C) 2022, Benjamin G. Feuge-Miller, <benjamin.g.miller@utexas.edu>
@@ -40,10 +45,8 @@ if [ -z ${ASTRIA_MEASUREMENTS} ]; then
     return 0
 fi
 
-#NMSkies data
-CORRALNM="{$ASTRIA_MEASUREMENTS}/NMSkies_FLI0"
-#Emerald data
-CORRALAU="{$ASTRIA_MEASUREMENTS}/EmeraldAU_FLI0"
+#NMSkies data and Emerald data
+declare -a ASTRIA_LIST=("NMSkies_FLI0" "EmeraldAU_FLI0")
 
 #Local copy of all ASTRIANET data
 COPYLOC="${SCRATCH}/TIP2data"
@@ -64,15 +67,10 @@ if [ ! -d "$TDMLOC" ]; then
     mkdir $TDMLOC
 fi
 
-
-
 #Get any new data from corral, no rsync needed
 #NOTE: ASSUMES UNZIPPED
-for FOLDER in $CORRALNM/*/; do
-    cp -R -u -p $FOLDER $COPYLOC
-done
-for FOLDER in $CORRALAU/*/; do
-    cp -R -u -p $FOLDER $COPYLOC
+for ASTRIA_FOLDER in "${ASTRIA_LIST[@]}"; do
+    cp -R -u -p "${ASTRIA_MEASUREMENTS}/${ASTRIA_FOLDER} ${COPYLOC} "  
 done
 
 #Legacy: Count fit files in local diretory 
@@ -83,8 +81,9 @@ done
 
 #Set up PYCIS
 module load gcc/9.1
-module load cmake/3.10.2
+module load cmake/3.16.1 #.10.2
 module load python3/3.8.2
+module load hdf5
 #. setup.sh
 if ! which "solve-field" >& /dev/null ; then
     echo "resetting paths"
@@ -92,8 +91,9 @@ if ! which "solve-field" >& /dev/null ; then
 fi
 
 #Launch sbatch 
-timer=30 #runtime in minutes
-sleeper=2 #sleep time in minutes (to close scripts)
+timer=120 #runtime in minutes
+WINDOW=30
+#sleeper=2 #sleep time in minutes (to close scripts)
 for FOLDER in $COPYLOC/*/; do
 FOLDER=${FOLDER%*/}
 FOLDER="${FOLDER##*/}"
@@ -102,27 +102,28 @@ FOLDER="${FOLDER##*/}"
 echo "Writing output to ${COPYLOC}/${FOLDER}/pycis.out"
 cat <<EOF |sbatch
 #!/bin/bash
-#SBATCH -p skx-dev
-#SBATCH -J pycis.job
+#SBATCH -p skx-normal
+#SBATCH -J pycis_${FOLDER}_${WINDOW}.job
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH -t 00:$timer:00
-#SBATCH -o $COPYLOC/$FOLDER/pycis.out
+#SBATCH -o $COPYLOC/$FOLDER/pycis_${WINDOW}_${FOLDER}.out
 
 # #SBATCH --mail-user 
 # #SBATCH --mail-type ALL
 
 # Switch to folder and load modules
 module load gcc/9.1
-module load cmake/3.10.2
+module load cmake/3.16.1
 module load python3/3.8.2
+module load hdf5
 
 # Check installation and activate source 
 source env/bin/activate
 
 #set omp and run demo with faulthandler
 export OMP_NUM_THREADS=48
-python3 -q -X faulthandler runpycis.py -i $COPYLOC -s $FOLDER -o $OUTLOC/$FOLDER
+python3 -q -X faulthandler runpycis.py -i ${COPYLOC} -s ${FOLDER} -o ${OUTLOC}/${FOLDER} -t ${TDMLOC} -w $WINDOW
 
 #close source for safe exit
 deactivate

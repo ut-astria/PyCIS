@@ -6,7 +6,7 @@ demo_new.py: Main interface to PyCIS, with examples
 Benjamin Feuge-Miller: benjamin.g.miller@utexas.edu
 The University of Texas at Austin, 
 Oden Institute Computational Astronautical Sciences and Technologies (CAST) group
-Date of Modification: February 16, 2022
+Date of Modification: May 5, 2022
 
 --------------------------------------------------------------------
 PyCIS: An a-contrario detection algorithm for space object tracking from optical time-series telescope data. 
@@ -30,14 +30,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 ## IMPORT NECESSARY LIBRARIES
 import faulthandler; faulthandler.enable()
-import os
 import argparse
 import time
-from pylib.main_pipe import run_pycis, end_pipe
-from astropy.io import fits
-import numpy as np
 import glob
-import time
+import numpy as np
+from astropy.io import fits
+from pylib.main_pipe import run_pycis, end_pipe
 
 def getsettings(satfolder,satlist,width=20,overlap=0):
     #Fetch list of files
@@ -50,8 +48,14 @@ def getsettings(satfolder,satlist,width=20,overlap=0):
         imlist =  sorted(glob.glob('%s/*.%s'%(input_dir,datatype)))
         listlen = len(imlist)
         if listlen==0: 
-            print('NO FIT OR FITS FILES, CHANGE DATATYPE')
-            quit()    
+            print('NO FIT OR FITS FILES...')
+            #quit()
+            datatype='fit.zip'
+            imlist =  sorted(glob.glob('%s/*.%s'%(input_dir,datatype)))
+            listlen = len(imlist)
+            if listlen==0: 
+                print('NO FIT.ZIP FILES, CHANGE DATATYPE')
+                quit()
     #Fetch data info
     with fits.open(imlist[0]) as hdul:
         hdr=hdul[0].header
@@ -68,7 +72,7 @@ def getsettings(satfolder,satlist,width=20,overlap=0):
         #outlier detection is for each block, large starfield rotation
     elif exposure==3.0:
         print('ACTIVATING GEO SETTINGS FOR EXPOSURE=',exposure)
-        t=1.3
+        t=1.2#1.3
         median=1
         binfactor=1
         runoutlierpair=[0,1]
@@ -84,31 +88,37 @@ def getsettings(satfolder,satlist,width=20,overlap=0):
     init = [0,window-1]
     winlist.append(init)
     last=0
-    while (last+(2*window))<listlen: #last+2*window to avoid partial window
+    while (last+window)<listlen: #last+2*window to avoid partial window
         #TODO: Confirm this works when we enable overlapping frames
         last = winlist[-1]
         last = last[-1] - overlap
         now = [last+1,last+window]
-        winlist.append(now)
+        if last+window<listlen:
+            winlist.append(now)
+        else:
+            break
    
 
     return winlist, t, median, binfactor, runoutlierpair
 
-def main(satfolder,satlist, framerange, t, median, binfactor,bigparallel,subprocess_count,injectScale=0,runoutlierpair=[0,1]):
+def main(satfolder,satlist, framerange, t, median, binfactor,bigparallel,subprocess_count,injectScale=0,runoutlierpair=[0,1],frameidx=0,medianimg=None,minimg=0,p1=None,p2=None):
     '''    Demo of GEO navstar observation, tighter angular tolerance for detection   '''
     #SPECIFY DATA INPUT AND FOLDERS
     #satfolder= 'data' #folder of all data
     #satlist = ['20201224_26407_navstar-48',] #folder of test data
     datatype='fits' #test data suffix
+    #datatype='fit.zip' #test data suffix
     #imgfolder='results_NavstarDemo' #where to store results
     #framerange = [-1,18] #frames of test data to use, default all [-1,-1]
     imscale = 1 #scale of test data to import (crop precentage)
     numsteps = 5 #number of partitioning parallelization steps (numsteps-x-numsteps partitioning)
+   # if binfactor==1:
+   #     numsteps=9
  
     #PRINTING OPTIONS   
     printonly = 0 #flag to only print input data and exit (initial visualization)
-    makeimg = 1 #flag to print still images
-    makegif = 1 #flag to print animations
+    makeimg = 0 #flag to print still images
+    makegif = 0 #flag to print animations
     printcluster=0 #flag to print 2nd order clustering
     vs = 0.25 #scale of printing (precentage)
     fps=5 #fps of animation .gif
@@ -134,25 +144,27 @@ def main(satfolder,satlist, framerange, t, median, binfactor,bigparallel,subproc
 
     #RUN PYCIS
     tlist = [] #record runtime for multiple hyperparameter options
+    getmedianimg = 2 if frameidx>0 else 1
     for dummy_parameter in [0,]: #may iterate over several hyperparameter options 
         rangetag = 'A%dB%d'%(framerange[0]+1,framerange[1]+1)
         imgname = 'a%dt%dm%db%d_%s'%(a,int(t*10),median,binfactor,rangetag) #image name to save, listing hyperparameter options
         linename = '%s_e%d_inj%d'%(imgname,int(e2*100),injectScale) #For PR analysis, can fix 1st-order detections and redo clustering for e2 options
         #linename = '%s_e%d_inj%d'%(imgname,int(e2*100),injectScale) #For PR analysis, can fix 1st-order detections and redo clustering for e2 options
         stime = time.time()     
-        run_pycis(
+        output1,output2,outputP1,outputP2=run_pycis(
             satfolder,satlist,datatype,numsteps,
-            imgfolder,imgname,vs*float(binfactor),makegif,printcluster,
+            imgfolder,tdmfolder,imgname,vs*float(binfactor),makegif,printcluster,
             solvemarkov,resolve,printonly,
             imscale,framerange,a,t,median,0,e2=e2,makeimg=makeimg,
             linename=linename,binfactor=binfactor,fps=fps,tle=tle,
             imgastro=imgastro,cluster=cluster,solveastro=solveastro,
             injectScale=injectScale,
             bigparallel=bigparallel,subprocess_count=subprocess_count,
-            runoutlier=runoutlier)
+            runoutlier=runoutlier,getmedianimg=getmedianimg,bigmedianimg=medianimg,minimg=minimg,p1=p1,p2=p2)
         tlist.append(time.time() - stime)
     print('TIME:')
-    print(tlist)
+    #print(tlist)
+    return output1, output2,outputP1,outputP2
 
 def associate_all(satfolder,satlist, framerange, t, median, binfactor,bigparallel,subprocess_count,injectScale,
     winlist,width,overlap,runoutlierpair=[0,1]):
@@ -161,16 +173,19 @@ def associate_all(satfolder,satlist, framerange, t, median, binfactor,bigparalle
     #satfolder= 'data' #folder of all data
     #satlist = ['20201224_26407_navstar-48',] #folder of test data
     datatype='fits' #test data suffix
+    #datatype='fit.zip' #test data suffix
     #imgfolder='results_NavstarDemo' #where to store results
     #framerange = [-1,18] #frames of test data to use, default all [-1,-1]
     imscale = 1 #scale of test data to import (crop precentage)
     numsteps = 5 #number of partitioning parallelization steps (numsteps-x-numsteps partitioning)
+    #if binfactor==1:
+    #    numsteps=9
  
     #PRINTING OPTIONS   
     printonly = 0 #flag to only print input data and exit (initial visualization)
     makeimg = 1 #flag to print still images
     makegif = 1 #flag to print animations
-    printcluster=0 #flag to print 2nd order clustering
+    printcluster=1 #flag to print 2nd order clustering
     vs = 0.25 #scale of printing (precentage)
     fps=5 #fps of animation .gif
     
@@ -180,8 +195,8 @@ def associate_all(satfolder,satlist, framerange, t, median, binfactor,bigparalle
     solvemarkov=0 #flag solve local markov kernels or assume global uniformity
     resolve=1 #flag to enable/disable resolving of 1st-order line detections
     cluster = 1 #flag to disable(0)/ resolve (1)/ or use existing (2) 2nd-order clustering 
-    solveastro=0 #flag to disable(0)/ resolve (1)/ or use existing (2) astrometry solution
-    imgastro=1 #flag to use image data in ranking star values (1) or rank by NFA (0)
+    solveastro=1#2 #flag to disable(0)/ resolve (1)/ or use existing (2) astrometry solution
+    imgastro=3#0#2 #flag to use image data in ranking star values (1) or rank by NFA (0)
     tle=[] #optional TLE to use, if present generates an 'expected track' for precision-recall analysis
 
     #HYPERPARAMETERS
@@ -199,8 +214,11 @@ def associate_all(satfolder,satlist, framerange, t, median, binfactor,bigparalle
     imgnamelist=[]
     linenamelist=[]
     rangetag = 'ASSOC%dT%dW%dO%d'%(winlist[0][0]+1,winlist[-1][1]+1,width,overlap)   
-    allname = 'a%dt%dm%db%d_%s'%(a,int(t*10),median,binfactor,rangetag)
-    alllinename = '%s_e%d_inj%d'%(allname,int(e2*100),injectScale)
+    #allname = 'a%dt%dm%db%d_%s'%(a,int(t*10),median,binfactor,rangetag)
+    #allname = 'W%dO%dNewmedian_2dZ1_t%d_spline'%(width,overlap,int(t*10))#'a%dt%dm%db%d_%s'%(a,int(t*10),median,binfactor,rangetag)
+    allname = '%s'%(rangetag)
+    #alllinename = '%s_e%d_inj%d'%(allname,int(e2*100),injectScale)
+    alllinename = '%s'%allname#'%s_e%d_inj%d'%(allname,int(e2*100),injectScale)
 
     #Build list of memory to call 
     for framerange in winlist:
@@ -213,7 +231,7 @@ def associate_all(satfolder,satlist, framerange, t, median, binfactor,bigparalle
     stime = time.time() 
     end_pipe(satfolder,satlist,datatype,numsteps,
         allname,alllinename, imgnamelist, linenamelist,winlist,
-        imgfolder,vs*float(binfactor),makegif,printcluster,
+        imgfolder,tdmfolder,vs*float(binfactor),makegif,printcluster,
         resolve,imscale, median,shift=0,sig=0,e2=0,makeimg=makeimg,solveastro=solveastro,
         linename='NULL',binfactor=binfactor,fps=fps,tle=[],imgastro=imgastro,cluster=cluster,background=0,
         runoutlier=runoutlier,subprocess_count=subprocess_count)
@@ -233,6 +251,8 @@ if __name__=="__main__":
     parser.add_argument("-i",type=str,help='Input data directory')
     parser.add_argument("-s",type=str,help='Input data obs. subdirectory')
     parser.add_argument("-o",type=str,help='Output data directory')
+    parser.add_argument("-t",type=str,help='Output TDM directory')
+    parser.add_argument("-w",type=int,help='Window width')
     
     args = parser.parse_args()
         
@@ -240,42 +260,64 @@ if __name__=="__main__":
     sat       = args.s #folder of all data
     satlist   = [sat,] #folder of test data
     imgfolder = args.o #where to store results
+    tdmfolder = args.t #where to store results
 
 
-    width=20 #frame for window
+    width=30 #frame for window
     overlap=0 #overlapping between windows
     bigparallel = 1
-    subprocess_count = 20
+    subprocess_count = 20#20
     injectScale = -1 #0 #-1
     
 
+    for width in [args.w,]:#[30,20,10]:#[20,30]:
+        #overlap = width-int(np.ceil(width/3.))
+        alltime = time.time() 
+        #winlist, t, median, binfactor, runoutlierpair = getsettings(satfolder,sat,width,overlap)
+        winlist, t, median, binfactor, runoutlierpair = getsettings(satfolder,sat,width,overlap)
+        width2 = int(np.ceil(width*2./3.))
+        winlistB, _, _, _, _ = getsettings(satfolder,sat,width2,overlap)
+        winlist.extend(winlistB)
+        print('FULL WINLIST:',winlist)
+        injectScale=-1
+        #Witha 20-wide window in WINLIST, 
+        if binfactor==1:
+            bigparallel=0
 
-    alltime = time.time() 
-    winlist, t, median, binfactor, runoutlierpair = getsettings(satfolder,sat,width,overlap)
-    injectScale=-1
-    #Witha 20-wide window in WINLIST, 
-    if binfactor==1:
-        bigparallel=0
-
-    print('WINDOWS:')
-    print(winlist)
-    for frameidx, framerange in enumerate(winlist):
-        frametime = time.time()
-        print('RUNNING FRAMERANGE %d/%d'%(frameidx+1,len(winlist)))
-        main(satfolder,satlist, framerange, t, median, binfactor, 
-            bigparallel,subprocess_count,injectScale,runoutlierpair)
+        print('WINDOWS:')
+        print(winlist)
+        allwintime = time.time()
+        #'''
+        medianimg = []
+        minimg=0
+        p1 = None
+        p2 = None
+        for frameidx, framerange in enumerate(winlist):
+            frametime = time.time()
+            print('RUNNING FRAMERANGE %d/%d'%(frameidx+1,len(winlist)))
+            tempframe,tempmin,tempp1,tempp2 = main(satfolder,satlist, framerange, t, median, binfactor, 
+                bigparallel,subprocess_count,injectScale,runoutlierpair,frameidx,medianimg,minimg,p1,p2)
+            if frameidx==0: #Get median img data from the full dataset, more accurate than window-based flat
+                medianimg =np.copy(tempframe)
+                minimg=np.copy(tempmin)
+                p1=np.copy(tempp1)
+                p2=np.copy(tempp2)
+            #main(satfolder,satlist, framerange, t, median, binfactor, 
+            #    bigparallel,subprocess_count,injectScale,runoutlierpair)
+            frametime = time.time()-frametime
+            print('WINDOW TIME : %.2f minutes'%(frametime/60.))
+        #'''
+        allwintime = time.time() - allwintime
+        print('ALL WINDOW TIME : %.2f minutes'%(allwintime/60.))
+        print('Windows complete.  Running final association... ')
+        frametime = time.time() 
+        print('RUNNING FRAME ASSOCIATION')
+        associate_all(satfolder,satlist, [], t, median, binfactor, 
+            bigparallel,subprocess_count,injectScale,
+            winlist, width, overlap,runoutlierpair)
         frametime = time.time()-frametime
-        print('WINDOW TIME : %.2f minutes'%(frametime/60.))
+        print('ALL MERGE TIME : %.2f minutes'%(frametime/60.))
 
-    print('Windows complete.  Running final association... ')
-    frametime = time.time() 
-    print('RUNNING FRAME ASSOCIATION')
-    associate_all(satfolder,satlist, [], t, median, binfactor, 
-        bigparallel,subprocess_count,injectScale,
-        winlist, width, overlap,runoutlierpair)
-    frametime = time.time()-frametime
-    print('MERGE TIME : %.2f minutes'%(frametime/60.))
-
-    
-    alltime=time.time()-alltime
-    print('ALL WINDOW TIME : %.2f minutes'%(alltime/60.))
+        
+        alltime=time.time()-alltime
+        print('ALL RUN TIME : %.2f minutes'%(alltime/60.))

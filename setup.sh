@@ -36,7 +36,8 @@
 ##LOAD INITIAL DEPENDENCIES 
 if type "sbatch" >& /dev/null; then
     module load gcc/9.1
-    module load cmake/3.10.2
+    module load cmake/3.16.1 #10.2
+    module load hdf5
     module load python3/3.8.2
 fi
 export CC=`which gcc`
@@ -58,7 +59,7 @@ if [ ! -d "./env/lib/python3.8/site-packages/imageio" ]; then
 fi
 #Install the PyCIS-LSD library 
 if [ ! -d "./pylsd" ]; then
-    git clone git://github.com/bgmiller100/PyCIS-LSD.git "./pylsd"
+    git clone https://github.com/ut-astria/PyCIS-LSD.git "./pylsd"
     dos2unix pylsd/*.sh
 fi
 export PATH=$PATH:$CWD/pylsd
@@ -70,8 +71,13 @@ cd ${CWD}
 ## INSTALL SOFTWARE FOR TRACK ASSOCIATION 
 #Flann library 
 if [ ! -d "./flann" ]; then
-    git clone git://github.com/mariusmuja/flann.git
+    git clone https://github.com/mariusmuja/flann.git
     cd flann
+    #Necessary for cmake>=3.11
+    touch src/cpp/empty.cpp
+    sed -i '33s#.*#    add_library(flann_cpp SHARED empty.cpp)#' src/cpp/CMakeLists.txt
+    sed -i '91s#.*#        add_library(flann SHARED empty.cpp)#' src/cpp/CMakeLists.txt
+    #Continue build
     mkdir build
     cd build
     cmake .. -DBUILD_C_BINDINGS=ON -DBUILD_PYTHON_BINDINGS=OFF -DBUILD_MATLAB_BINDINGS=OFF -DBUILD_DOC=OFF -DBUILD_EXAMPLES=OFF -DBUILD_TESTS=OFF
@@ -145,7 +151,7 @@ export PATH=$PATH:$CWD/wcslib/include
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CWD/wcslib/lib
 export PKG_CONFIG_PATH=${PKG_CONFIG_PATH}:$CWD/wcslib/lib/pkgconfig/
 #Install Astrometry.net offline core software (without extra packages for printing)
-source env/bin/activate
+#source env/bin/activate
 if [ ! -d "./astrometry" ]; then 
     # get astrometry
     wget -c http://astrometry.net/downloads/astrometry.net-latest.tar.gz
@@ -186,8 +192,7 @@ if [ ! -d "./astrometry" ]; then
     #done
 
     #CONTINGENCY: Prevent duplicate download
-    rm "${CWD}/astrometry/data/*.fits.1"
-    rm "${CWD}/astrometry/data/*.fits.2"
+    rm "${CWD}/astrometry/data/*.fits.*"
     #Get small-sized index files (2-11 arcmin diameter skymarks)
     #for ss in {4200..4204}; do
     #    for ssa in {00..47}; do
@@ -195,10 +200,12 @@ if [ ! -d "./astrometry" ]; then
     #        wget -c -r -nd -np -P ${CWD}/astrometry/data "data.astrometry.net/4200/index-${ss}-${ssb}.fits" 
     #done   
 fi
-export PATH=$PATH:${CWD}/astrometry/bin
-export PATH=$PATH:$CWD/astrometry/include
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CWD/astrometry/lib
-export PKG_CONFIG_PATH=${PKG_CONFIG_PATH}:$CWD/astrometry/lib/pkgconfig/
+#IF THERE IS A BAD INSTALL IN usr/local, CAN INSTEAD 
+#SWTICH PRIORITY BY PATH=/dir:$PATH
+export PATH=${CWD}/astrometry/bin:$PATH
+export PATH=$CWD/astrometry/include:$PATH
+export LD_LIBRARY_PATH=$CWD/astrometry/lib:$LD_LIBRARY_PATH
+export PKG_CONFIG_PATH=$CWD/astrometry/lib/pkgconfig/:${PKG_CONFIG_PATH}
 
-deactivate
+#deactivate
 
